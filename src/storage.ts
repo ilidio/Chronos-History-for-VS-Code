@@ -62,7 +62,9 @@ export class HistoryStorage {
         document: vscode.TextDocument, 
         eventType: Snapshot['eventType'], 
         label?: string, 
-        description?: string
+        description?: string,
+        linesAdded?: number,
+        linesDeleted?: number
     ): Promise<Snapshot | null> {
         await this.init();
         
@@ -111,7 +113,9 @@ export class HistoryStorage {
             eventType,
             storagePath: id,
             label,
-            description
+            description,
+            linesAdded,
+            linesDeleted
         };
 
         index.snapshots.push(snapshot);

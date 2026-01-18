@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
+import * as path from 'path';
 import { HistoryStorage } from './storage';
-import { ChronosConfig } from './types';
+import { ChronosConfig, Snapshot } from './types';
 import { minimatch } from 'minimatch';
 import { AIService } from './ai/aiService';
 import { GitService } from './git/gitService';
@@ -79,10 +80,8 @@ export class HistoryManager {
     public async stopExperiment(keep: boolean) {
         if (!this.activeExperiment) return;
         
-        // AI Post-Mortem
         if (this.aiService.isEnabled('experimentPostMortem')) {
             try {
-                // Resolve file URI
                 let fileUri: vscode.Uri | undefined;
                 if (vscode.workspace.workspaceFolders) {
                     fileUri = vscode.Uri.joinPath(vscode.workspace.workspaceFolders[0].uri, this.activeExperiment.filePath);
@@ -96,21 +95,15 @@ export class HistoryManager {
                         const startPath = (await this.storage.getSnapshotUri(startSnapshot, fileUri)).fsPath;
                         const diff = await this.gitService.getDiff(startPath, fileUri.fsPath);
                         
-                        vscode.window.withProgress({
-                            location: vscode.ProgressLocation.Notification,
-                            title: "Generating Experiment Summary...",
-                            cancellable: false
-                        }, async () => {
-                            const summary = await this.aiService.experimentPostMortem(diff, keep);
-                            if (summary) {
-                                if (keep) {
-                                    const doc = await vscode.workspace.openTextDocument({ content: summary, language: 'markdown' });
-                                    await vscode.window.showTextDocument(doc);
-                                } else {
-                                    vscode.window.showInformationMessage(`Experiment Discarded.\n\nAI Summary: ${summary}`, { modal: true });
-                                }
+                        const summary = await this.aiService.experimentPostMortem(diff, keep);
+                        if (summary) {
+                            if (keep) {
+                                const doc = await vscode.workspace.openTextDocument({ content: summary, language: 'markdown' });
+                                await vscode.window.showTextDocument(doc);
+                            } else {
+                                vscode.window.showInformationMessage(`AI Note: ${summary}`, { modal: true });
                             }
-                        });
+                        }
                     }
                 }
             } catch (e) {
@@ -120,9 +113,6 @@ export class HistoryManager {
 
         if (!keep) {
             await vscode.commands.executeCommand('chronos.restoreSnapshot', this.activeExperiment.snapshotId, this.activeExperiment.filePath);
-            vscode.window.showInformationMessage(`Experiment "${this.activeExperiment.name}" discarded.`);
-        } else {
-            vscode.window.showInformationMessage(`Experiment "${this.activeExperiment.name}" kept.`);
         }
         
         this.activeExperiment = null;
@@ -151,12 +141,9 @@ export class HistoryManager {
         try {
             const history = await this.storage.getHistoryForFile(doc.uri);
             if (history.filter(s => s.eventType !== 'label').length === 0) {
-                console.log('[HistoryManager] Creating initial baseline for:', relativePath);
                 await this.storage.saveSnapshot(doc, 'manual', 'Initial Baseline');
             }
-        } catch (e) {
-            console.error('[HistoryManager] onOpen baseline failed:', e);
-        }
+        } catch (e) {}
     }
 
     private async onSave(doc: vscode.TextDocument) {
@@ -166,22 +153,31 @@ export class HistoryManager {
 
         try {
             let label = undefined;
+            let magnitude = { added: 0, deleted: 0 };
             
-            // Smart Summaries
-            if (this.aiService.isEnabled('smartSummaries')) {
-                const history = await this.storage.getHistoryForFile(doc.uri);
-                if (history.length > 0) {
-                    const prev = history[0]; // Latest snapshot before this save
-                    const prevPath = (await this.storage.getSnapshotUri(prev, doc.uri)).fsPath;
-                    const diff = await this.gitService.getDiff(prevPath, doc.fileName);
-                    
-                    if (diff && diff.trim().length > 0) {
+            const history = await this.storage.getHistoryForFile(doc.uri);
+            if (history.length > 0) {
+                const prev = history[0];
+                const prevPath = (await this.storage.getSnapshotUri(prev, doc.uri)).fsPath;
+                const diff = await this.gitService.getDiff(prevPath, doc.fileName);
+                
+                if (diff && diff.trim().length > 0) {
+                    magnitude = this.parseMagnitude(diff);
+                    if (this.aiService.isEnabled('smartSummaries')) {
                         label = await this.aiService.summarizeDiff(diff);
                     }
                 }
             }
 
-            const result = await this.storage.saveSnapshot(doc, 'save', label);
+            const result = await this.storage.saveSnapshot(
+                doc, 
+                'save', 
+                label, 
+                undefined, 
+                magnitude.added, 
+                magnitude.deleted
+            );
+            
             if (result) {
                 const msg = label ? `Snapshot: ${label}` : `Snapshot: ${relativePath}`;
                 vscode.window.setStatusBarMessage(msg, 3000);
@@ -189,6 +185,97 @@ export class HistoryManager {
         } catch (e) {
             console.error('[HistoryManager] Save failed:', e);
         }
+    }
+
+    private parseMagnitude(diff: string): { added: number, deleted: number } {
+        let added = 0;
+        let deleted = 0;
+        const lines = diff.split('\n');
+        for (const line of lines) {
+            if (line.startsWith('+') && !line.startsWith('+++')) added++;
+            else if (line.startsWith('-') && !line.startsWith('---')) deleted++;
+        }
+        return { added, deleted };
+    }
+
+    public async generateCommitDraft(): Promise<string> {
+        if (!vscode.workspace.workspaceFolders) return "";
+        const root = vscode.workspace.workspaceFolders[0].uri.fsPath;
+        const lastCommitTime = await this.gitService.getLastCommitTimestamp(root);
+        
+        const history = await this.storage.getProjectHistory();
+        const recentSnapshots = history.filter(s => s.timestamp > lastCommitTime && s.eventType === 'save');
+        
+        if (recentSnapshots.length === 0) return "No changes since last commit.";
+
+        const files = new Set(recentSnapshots.map(s => s.filePath));
+        let aggregateDiff = "";
+
+        for (const file of files) {
+            const fileUri = vscode.Uri.file(path.join(root, file));
+            const fileHistory = recentSnapshots.filter(s => s.filePath === file);
+            if (fileHistory.length > 0) {
+                const oldestInSession = fileHistory[fileHistory.length - 1];
+                const startPath = (await this.storage.getSnapshotUri(oldestInSession, fileUri)).fsPath;
+                const currentPath = fileUri.fsPath;
+                const diff = await this.gitService.getDiff(startPath, currentPath);
+                aggregateDiff += `\nFile: ${file}\n${diff}\n`;
+            }
+        }
+
+        return await this.aiService.generateCommitMessage(aggregateDiff);
+    }
+
+    public async semanticSearch(query: string): Promise<Snapshot[]> {
+        const snapshots = await this.storage.getProjectHistory();
+        const data = snapshots.slice(0, 100).map(s => ({
+            id: s.id, 
+            label: s.label || s.eventType, 
+            path: s.filePath, 
+            date: new Date(s.timestamp).toLocaleString() 
+        }));
+        
+        const result = await this.aiService.semanticSearch(query, JSON.stringify(data));
+        try {
+            const match = result.match(/.*\[.*\].*/s); 
+            if (match) {
+                const ids = JSON.parse(match[0]);
+                return snapshots.filter(s => ids.includes(s.id));
+            }
+        } catch (e) {}
+        return [];
+    }
+
+    public clusterSnapshots(snapshots: Snapshot[]): (Snapshot | { type: 'cluster', items: Snapshot[], timestamp: number })[] {
+        if (snapshots.length < 2) return snapshots;
+        
+        const result: (Snapshot | { type: 'cluster', items: Snapshot[], timestamp: number })[] = [];
+        let currentCluster: Snapshot[] = [snapshots[0]];
+        const WINDOW = 5 * 60 * 1000; 
+
+        for (let i = 1; i < snapshots.length; i++) {
+            const prev = snapshots[i-1];
+            const curr = snapshots[i];
+            
+            if (Math.abs(prev.timestamp - curr.timestamp) < WINDOW) {
+                currentCluster.push(curr);
+            } else {
+                if (currentCluster.length > 2) {
+                    result.push({ type: 'cluster', items: currentCluster, timestamp: currentCluster[0].timestamp });
+                } else {
+                    result.push(...currentCluster);
+                }
+                currentCluster = [curr];
+            }
+        }
+        
+        if (currentCluster.length > 2) {
+            result.push({ type: 'cluster', items: currentCluster, timestamp: currentCluster[0].timestamp });
+        } else {
+            result.push(...currentCluster);
+        }
+        
+        return result;
     }
 
     private async onRename(e: vscode.FileRenameEvent) {
@@ -228,9 +315,7 @@ export class HistoryManager {
                     await vscode.workspace.fs.stat(uri);
                     exists = true;
                     break;
-                } catch {
-                    // Not found in this folder
-                }
+                } catch {}
             }
             if (!exists) {
                 deletedFiles.push(relativePath);

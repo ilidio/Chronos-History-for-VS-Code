@@ -7,6 +7,8 @@ export interface Snapshot {
     label?: string;
     description?: string;
     relevantRange?: { start: number; end: number };
+    linesAdded?: number;
+    linesDeleted?: number;
 }
 
 export interface HistoryEntry extends Snapshot {

@@ -57,6 +57,11 @@ const mockVscode = {
     StatusBarAlignment: { Left: 1, Right: 2 },
     window: {
         createStatusBarItem: () => ({ show: () => {}, hide: () => {}, text: '', command: '' }),
+        createOutputChannel: (name) => ({
+            appendLine: (msg) => console.log(`[OutputChannel: ${name}] ${msg}`),
+            show: (preserveFocus) => {},
+            dispose: () => {}
+        }),
         showInformationMessage: (msg) => console.log('Info:', msg),
         showErrorMessage: (msg) => console.error('Error:', msg),
         showInputBox: async (opts) => { console.log('InputBox:', opts.prompt); return 'MockInput'; },

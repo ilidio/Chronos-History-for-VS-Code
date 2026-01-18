@@ -18,6 +18,7 @@ Chronos History
  ├─ Show Project History      (Global timeline of all changes)
  ├─ Show Recent Changes       (Quick view of latest modifications)
  ├─ Put Label                 (Create a named checkpoint)
+ ├─ Generate Commit Message   (AI draft based on local history)
 ```
 
 ### 🛠 Detailed Menu Reference

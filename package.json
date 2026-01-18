@@ -189,6 +189,17 @@
         "command": "chronos.manageExperiment",
         "title": "Manage Experiment",
         "category": "Chronos"
+      },
+      {
+        "command": "chronos.generateCommitMessage",
+        "title": "Generate Commit Message (AI)",
+        "category": "Chronos",
+        "icon": "$(sparkle)"
+      },
+      {
+        "command": "chronos.showLogs",
+        "title": "Show Chronos Logs",
+        "category": "Chronos"
       }
     ],
     "viewsContainers": {
@@ -263,6 +274,11 @@
         {
           "command": "chronos.putLabel",
           "group": "3_global@3"
+        },
+        {
+          "command": "chronos.generateCommitMessage",
+          "group": "3_global@4",
+          "when": "config.chronos.ai.apiKey"
         }
       ]
     },

@@ -67,6 +67,15 @@ export class GitService {
         });
     }
 
+    async getLastCommitTimestamp(cwd: string): Promise<number> {
+        return new Promise((resolve) => {
+            cp.exec('git log -1 --format=%ct', { cwd }, (err, stdout) => {
+                if (err) resolve(0);
+                else resolve(parseInt(stdout.trim()) * 1000);
+            });
+        });
+    }
+
     private parseGitLogL(output: string, maxCommits: number): GitCommit[] {
         const commits: GitCommit[] = [];
         const lines = output.split('\n');

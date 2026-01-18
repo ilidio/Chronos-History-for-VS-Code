@@ -80,4 +80,30 @@ export class AIService {
 
         return await this.generate(prompt);
     }
+
+    async semanticSearch(query: string, snapshotsMeta: string): Promise<string> {
+        const prompt = `You are an AI assistant helping a developer search their code history.
+        User Query: "${query}"
+        
+        Available Snapshots (ID, Label, File, Date):
+        ${snapshotsMeta}
+        
+        Analyze the query and the labels/paths. Return a JSON array of Snapshot IDs that are most relevant to the user's intent. 
+        Return ONLY the JSON array, no other text.`;
+        
+        return await this.generate(prompt);
+    }
+
+    async generateCommitMessage(diffs: string): Promise<string> {
+        const prompt = `You are an expert developer. Based on the following combined diffs of changes made since the last commit, generate a structured, professional Git commit message.
+        Use Conventional Commits format. 
+        Summarize the main changes clearly.
+        
+        Diffs:
+        ${diffs.substring(0, 10000)}
+        
+        Commit Message:`;
+        
+        return await this.generate(prompt);
+    }
 }
