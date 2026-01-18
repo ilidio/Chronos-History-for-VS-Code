@@ -31,14 +31,14 @@ This opens a timeline of every automatic snapshot taken for the **currently acti
 This is unique to the Chronos extension. It tracks changes locally on your machine, completely independent of Git.
 *   **How it works:** It filters your local Chronos snapshots to find only those where the selected lines were modified.
 *   **What it shows:** A timeline of your local edits (auto-saves) that affected that specific block of code.
-*   **Use case:** Ideal for tracking your own thought process during a coding session, undoing a specific change you made 10 minutes ago, or recovering a deleted block of logic that you haven't committed to Git yet.
+*   **Side-by-Side View:** By default, clicking a snapshot opens VS Code's native side-by-side diff editor, scoped specifically to the selected lines.
 
 #### 3. Git History for Selection
 **The direct equivalent to JetBrains' "Show History for Selection".**
 This feature integrates deeply with Git to track the evolution of specific lines of code, even if you haven't been running this extension.
 *   **How it works:** It runs a `git log -L` command on the selected lines.
-*   **What it shows:** It displays a list of every Git commit that touched those lines, showing the author, date, and commit message.
-*   **Use case:** Perfect for seeing *who* changed a specific function and *why* (via the commit message), or tracking a bug back to its introduction years ago.
+*   **What it shows:** It displays a list of every Git commit that touched those lines.
+*   **Diff View:** Select any commit to see exactly how those lines changed in that specific version, using the native side-by-side diff viewer.
 
 #### 4. Show Project History
 **The Global Activity Feed.**
@@ -46,25 +46,30 @@ This provides a bird's-eye view of changes across your **entire workspace**. It 
 
 #### 5. Show Recent Changes
 **The "What just happened?" view.**
-A streamlined, high-priority view of the most recent modifications. While Project History shows a long timeline, Recent Changes is optimized for quick context switching—helping you remember the last few files you touched before a break or a meeting.
+A streamlined, high-priority view of the most recent modifications. While Project History shows a long timeline, Recent Changes is optimized for quick context switching.
 
 #### 6. Put Label
 **Manual Checkpoints.**
-Chronos takes snapshots automatically, but sometimes you want to mark a specific moment (e.g., *"Right before the big API refactor"* or *"Stable build before test"*). Putting a label creates a **named bookmark** in your timeline, making it easy to find and revert to that specific version later.
+Chronos takes snapshots automatically, but sometimes you want to mark a specific moment (e.g., *"Right before the big API refactor"*). Putting a label creates a **named bookmark** in your timeline.
 
 ---
 
 ## 🌟 New Features
 
+### ↔️ Side-by-Side Diffs
+Enjoy a unified experience. Whether viewing local history or Git commits, Chronos now uses VS Code's native side-by-side diff editor by default. This provides syntax highlighting, intellisense, and a familiar interface for reviewing changes.
+*   **Toggle:** Prefer the old inline view? Disable `chronos.showDiffSideBySide` in settings.
+
+### 🧪 Local Experiments (Safe Mode)
+Safely try out risky refactors without Git branches.
+*   **Start:** Run command `Chronos: Start Experiment` (or use context menu if enabled).
+*   **Manage:** Use the Status Bar item to "Keep" or "Discard" the experiment.
+*   **Discard:** Instantly reverts your file to the state before the experiment started.
+*   **Configuration:** Enable/Disable via `chronos.experiments`.
+
 ### 🔍 Full-Text History Search
 Forgot where you wrote that one clever function? Search through your entire history of snapshots.
 *   **How:** Open any History View and use the search bar at the top.
-
-### 🧪 Local Experiments
-Safely try out risky refactors without Git branches.
-*   **Start:** Run command `Chronos: Start Experiment`.
-*   **Manage:** Use the Status Bar item to "Keep" or "Discard" the experiment.
-*   **Discard:** Instantly reverts your file to the state before the experiment started.
 
 ### ♻️ Deleted File Resurrection
 Accidentally deleted a file? Chronos remembers.
@@ -72,17 +77,7 @@ Accidentally deleted a file? Chronos remembers.
 *   **Action:** Find your deleted file in the "Deleted Files" list and click the restore icon.
 
 ### 📈 Activity View
-See where you've been most active in the last 24 hours.
-*   **Access:** "Recent Activity" list in the Chronos sidebar.
-
----
-
-## 🚀 Installation
-
-1. Open VS Code.
-2. Go to the **Extensions** view (`Cmd+Shift+X`).
-3. Search for **Chronos History**.
-4. Click **Install**.
+See where you've been most active in the last 24 hours via the "Recent Activity" list in the Chronos sidebar.
 
 ---
 
@@ -95,12 +90,15 @@ Tune the extension in **Settings** (`Cmd+,` -> search `chronos`):
 | `chronos.enabled` | `true` | Turn the entire system on/off. |
 | `chronos.maxDays` | `30` | Days to keep history before pruning. |
 | `chronos.exclude` | `node_modules`, ... | Folders to ignore. |
-| `chronos.saveInProjectFolder` | `false` | If true, saves history in `.history/` inside your project (sharable). |
+| `chronos.showDiffSideBySide` | `true` | Use native side-by-side diff editor. Disable for inline view. |
+| `chronos.diff.syncScroll` | `true` | Synchronize scrolling in diff view. |
+| `chronos.experiments` | `true` | Enable the "Start Experiment" feature menu item. |
+| `chronos.saveInProjectFolder` | `false` | If true, saves history in `.history/` inside your project. |
 
 ---
 
 ## 🛡️ Data & Privacy
-**Your code stays yours.** All history is stored locally on your machine (in VS Code's global storage or your project folder). No data is ever sent to any server.
+**Your code stays yours.** All history is stored locally on your machine. No data is ever sent to any server.
 
 ---
 
