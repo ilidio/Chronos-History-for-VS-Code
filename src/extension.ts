@@ -9,6 +9,7 @@ import { HistoryViewProvider } from './views/historyWebview';
 import { DeletedFilesProvider, DeletedFileItem } from './views/deletedFilesProvider';
 import { ActivityProvider } from './views/activityProvider';
 import { GitService } from './git/gitService';
+import { AIService } from './ai/aiService';
 import { Snapshot, GitCommit } from './types';
 
 let storage: HistoryStorage;
@@ -18,6 +19,7 @@ let viewProvider: HistoryViewProvider;
 let deletedFilesProvider: DeletedFilesProvider;
 let activityProvider: ActivityProvider;
 let gitService: GitService;
+let aiService: AIService;
 let outputChannel: vscode.OutputChannel;
 
 export function activate(context: vscode.ExtensionContext) {
@@ -28,7 +30,11 @@ export function activate(context: vscode.ExtensionContext) {
     storage = new HistoryStorage(context);
     viewProvider = new HistoryViewProvider(context.extensionUri, outputChannel);
     gitService = new GitService();
-    manager = new HistoryManager(context, storage);
+    aiService = new AIService();
+    
+    // Pass gitService to manager for AI diffs
+    manager = new HistoryManager(context, storage, gitService);
+    
     historyFilter = new HistoryFilter(storage, gitService);
     deletedFilesProvider = new DeletedFilesProvider(manager, storage);
     activityProvider = new ActivityProvider(storage);
@@ -112,7 +118,6 @@ async function openDiff(snapshot: Snapshot, baseFilePath: string, currentSelecti
     }
 
     if (!fileUri) {
-        outputChannel.appendLine('[openDiff] Error: Could not determine file path.');
         vscode.window.showErrorMessage('Could not determine file path.');
         return;
     }
@@ -122,7 +127,6 @@ async function openDiff(snapshot: Snapshot, baseFilePath: string, currentSelecti
     if (!snapshot.relevantRange && !currentSelection) {
          try {
             const snapshotUri = await storage.getSnapshotUri(snapshot, fileUri);
-            outputChannel.appendLine(`[openDiff] Opening full diff between ${snapshotUri.fsPath} and ${fileUri.fsPath}`);
             await vscode.commands.executeCommand(
                 'vscode.diff',
                 snapshotUri,
@@ -145,7 +149,6 @@ async function openDiff(snapshot: Snapshot, baseFilePath: string, currentSelecti
         const currRange = currentSelection;
 
         if (!snapRange || !currRange) {
-             outputChannel.appendLine('[openDiff] Missing range info, falling back to full diff');
              vscode.window.showWarningMessage('Missing range information for selection diff. showing full file.');
              const snapshotUri = await storage.getSnapshotUri(snapshot, fileUri);
              await vscode.commands.executeCommand('vscode.diff', snapshotUri, fileUri, `Chronos: ${new Date(snapshot.timestamp).toLocaleString()} ↔ Current`);
@@ -157,8 +160,6 @@ async function openDiff(snapshot: Snapshot, baseFilePath: string, currentSelecti
 
         const snapTemp = await createTempFile(`v_${snapshot.id.substring(0,8)}${ext}`, snapLines);
         const currTemp = await createTempFile(`current_selection${ext}`, currLines);
-
-        outputChannel.appendLine(`[openDiff] Created temp selection files: ${snapTemp.fsPath}, ${currTemp.fsPath}`);
 
         await vscode.commands.executeCommand(
             'vscode.diff',
@@ -174,22 +175,10 @@ async function openDiff(snapshot: Snapshot, baseFilePath: string, currentSelecti
 }
 
 async function openDiffGit(commit: GitCommit, filePath: string) {
-    outputChannel.appendLine(`[openDiffGit] Called for commit ${commit?.hash}`);
-    
-    if (!commit) {
-        outputChannel.appendLine('[openDiffGit] Error: Commit object is null/undefined');
-        vscode.window.showErrorMessage('Internal Error: Invalid commit object.');
+    if (!commit || !commit.diff) {
+        vscode.window.showErrorMessage('No diff information available for this commit.');
         return;
     }
-
-    if (commit.diff === undefined || commit.diff === null) {
-        outputChannel.appendLine('[openDiffGit] Error: commit.diff is null/undefined');
-        vscode.window.showErrorMessage('No diff content found for this commit.');
-        return;
-    }
-
-    const diffPreview = commit.diff.length > 100 ? commit.diff.substring(0, 100) + '...' : commit.diff;
-    outputChannel.appendLine(`[openDiffGit] Diff content preview: ${diffPreview.replace(/\n/g, '\\n')}`);
 
     const ext = path.extname(filePath) || '.txt';
 
@@ -198,13 +187,7 @@ async function openDiffGit(commit: GitCommit, filePath: string) {
         let leftContent = '';
         let rightContent = '';
         
-        outputChannel.appendLine(`[openDiffGit] Parsing ${lines.length} lines of diff`);
-
         for (const line of lines) {
-            if (!line.startsWith(' ') && !line.startsWith('+') && !line.startsWith('-') && !line.startsWith('diff') && !line.startsWith('index') && !line.startsWith('---') && !line.startsWith('+++') && !line.startsWith('@@') && line.length > 0) {
-                 outputChannel.appendLine(`[openDiffGit] Unrecognized line prefix: "${line.substring(0, 10)}"..."`);
-            }
-
             if (line.startsWith('diff ') || line.startsWith('index ') || line.startsWith('---') || line.startsWith('+++') || line.startsWith('@@')) {
                 continue;
             }
@@ -217,13 +200,9 @@ async function openDiffGit(commit: GitCommit, filePath: string) {
                 rightContent += line.substring(1) + '\n';
             }
         }
-        
-        outputChannel.appendLine(`[openDiffGit] Left content size: ${leftContent.length}, Right content size: ${rightContent.length}`);
 
         const leftTemp = await createTempFile(`git_${commit.hash.substring(0,7)}_before${ext}`, leftContent);
         const rightTemp = await createTempFile(`git_${commit.hash.substring(0,7)}_after${ext}`, rightContent);
-        
-        outputChannel.appendLine(`[openDiffGit] Opening diff between ${leftTemp.fsPath} and ${rightTemp.fsPath}`);
 
         await vscode.commands.executeCommand(
             'vscode.diff',
@@ -233,11 +212,7 @@ async function openDiffGit(commit: GitCommit, filePath: string) {
         );
 
     } catch (e) {
-        outputChannel.appendLine(`[openDiffGit] Critical Error: ${e}`);
-        if (e instanceof Error) {
-            outputChannel.appendLine(e.stack || '');
-        }
-        outputChannel.show(true); 
+        console.error(e);
         vscode.window.showErrorMessage('Error parsing git diff: ' + e);
     }
 }
@@ -253,7 +228,7 @@ async function restoreDeletedFile(item: DeletedFileItem) {
         return;
     }
     
-    const snapshot = history[0]; 
+    const snapshot = history[0]; // Latest
     const snapshotUri = await storage.getSnapshotUri(snapshot, fileUri);
     const content = await vscode.workspace.fs.readFile(snapshotUri);
     
@@ -328,6 +303,12 @@ async function getDiffForSnapshot(snapshot: Snapshot, contextFileUri: vscode.Uri
     return diff;
 }
 
+async function explainSnapshot(snapshot: Snapshot, uri?: vscode.Uri): Promise<string> {
+    if (!aiService.isEnabled('explainChanges')) return "AI Explanation disabled.";
+    const diff = await getDiffForSnapshot(snapshot, uri);
+    return await aiService.explainDiff(diff);
+}
+
 async function showHistory(uri?: vscode.Uri, selection?: vscode.Range) {
     outputChannel.appendLine('[showHistory] Command triggered');
     await ensureStorage();
@@ -344,8 +325,9 @@ async function showHistory(uri?: vscode.Uri, selection?: vscode.Range) {
     
     const diffProvider = (s: Snapshot) => getDiffForSnapshot(s, uri);
     const onSearch = (query: string) => storage.search(query);
+    const onExplain = (s: Snapshot) => explainSnapshot(s, uri);
     
-    viewProvider.show(history, uri, diffProvider, selection, onSearch);
+    viewProvider.show(history, uri, diffProvider, selection, onSearch, onExplain);
 }
 
 async function showHistoryForSelection() {
@@ -373,8 +355,9 @@ async function showHistoryForSelection() {
 
         const diffProvider = (s: Snapshot) => getDiffForSnapshot(s, uri);
         const onSearch = (query: string) => storage.search(query);
+        const onExplain = (s: Snapshot) => explainSnapshot(s, uri);
         
-        viewProvider.show(filteredHistory, uri, diffProvider, editor.selection, onSearch);
+        viewProvider.show(filteredHistory, uri, diffProvider, editor.selection, onSearch, onExplain);
     } catch (e) {
         console.error('Error filtering history:', e);
         vscode.window.showErrorMessage('Failed to filter history for selection.');
@@ -386,6 +369,7 @@ async function showProjectHistory() {
     const history = await storage.getProjectHistory();
     const diffProvider = (s: Snapshot) => getDiffForSnapshot(s, undefined);
     const onSearch = (query: string) => storage.search(query);
+    // Explain not supported for project view yet without contextUri logic
     viewProvider.show(history, undefined, diffProvider, undefined, onSearch);
 }
 
@@ -473,6 +457,7 @@ async function restoreSnapshot(snapshotId: string, filePath?: string) {
     const snapshotUri = await storage.getSnapshotUri(snapshot, fileUri);
     const content = await vscode.workspace.fs.readFile(snapshotUri);
     
+    // Open the document if not already open
     const doc = await vscode.workspace.openTextDocument(fileUri);
     await vscode.window.showTextDocument(doc);
 

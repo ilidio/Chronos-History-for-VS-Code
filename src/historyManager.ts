@@ -2,15 +2,21 @@ import * as vscode from 'vscode';
 import { HistoryStorage } from './storage';
 import { ChronosConfig } from './types';
 import { minimatch } from 'minimatch';
+import { AIService } from './ai/aiService';
+import { GitService } from './git/gitService';
 
 export class HistoryManager {
     private storage: HistoryStorage;
     private config: ChronosConfig;
     private statusBarItem: vscode.StatusBarItem;
     private activeExperiment: { name: string, snapshotId: string, filePath: string } | null = null;
+    private aiService: AIService;
+    private gitService: GitService;
 
-    constructor(context: vscode.ExtensionContext, storage: HistoryStorage) {
+    constructor(context: vscode.ExtensionContext, storage: HistoryStorage, gitService: GitService) {
         this.storage = storage;
+        this.gitService = gitService;
+        this.aiService = new AIService();
         this.config = this.loadConfig();
         
         this.statusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left);
@@ -58,12 +64,6 @@ export class HistoryManager {
             return;
         }
         
-        // We only track experiment for the active file for simplicity in this version,
-        // or we could track it globally. Let's start with file-scope or global?
-        // "Experiments" usually imply a feature branch, so global is better.
-        // But our snapshots are file-based.
-        // Let's make it file-based for safety first.
-        
         const snapshot = await this.storage.saveSnapshot(editor.document, 'label', `Experiment Start: ${name}`);
         if (snapshot) {
             this.activeExperiment = { 
@@ -79,11 +79,46 @@ export class HistoryManager {
     public async stopExperiment(keep: boolean) {
         if (!this.activeExperiment) return;
         
+        // AI Post-Mortem
+        if (this.aiService.isEnabled('experimentPostMortem')) {
+            try {
+                // Resolve file URI
+                let fileUri: vscode.Uri | undefined;
+                if (vscode.workspace.workspaceFolders) {
+                    fileUri = vscode.Uri.joinPath(vscode.workspace.workspaceFolders[0].uri, this.activeExperiment.filePath);
+                }
+                
+                if (fileUri) {
+                    const history = await this.storage.getHistoryForFile(fileUri);
+                    const startSnapshot = history.find(s => s.id === this.activeExperiment!.snapshotId);
+                    
+                    if (startSnapshot) {
+                        const startPath = (await this.storage.getSnapshotUri(startSnapshot, fileUri)).fsPath;
+                        const diff = await this.gitService.getDiff(startPath, fileUri.fsPath);
+                        
+                        vscode.window.withProgress({
+                            location: vscode.ProgressLocation.Notification,
+                            title: "Generating Experiment Summary...",
+                            cancellable: false
+                        }, async () => {
+                            const summary = await this.aiService.experimentPostMortem(diff, keep);
+                            if (summary) {
+                                if (keep) {
+                                    const doc = await vscode.workspace.openTextDocument({ content: summary, language: 'markdown' });
+                                    await vscode.window.showTextDocument(doc);
+                                } else {
+                                    vscode.window.showInformationMessage(`Experiment Discarded.\n\nAI Summary: ${summary}`, { modal: true });
+                                }
+                            }
+                        });
+                    }
+                }
+            } catch (e) {
+                console.error("Experiment Post-Mortem failed", e);
+            }
+        }
+
         if (!keep) {
-            // Revert
-            // We need to trigger the restore command or call logic directly.
-            // Since we are in Manager, we can't easily call 'restoreSnapshot' from extension.ts without circular dep or command execution.
-            // Command execution is clean.
             await vscode.commands.executeCommand('chronos.restoreSnapshot', this.activeExperiment.snapshotId, this.activeExperiment.filePath);
             vscode.window.showInformationMessage(`Experiment "${this.activeExperiment.name}" discarded.`);
         } else {
@@ -130,9 +165,26 @@ export class HistoryManager {
         if (this.isExcluded(relativePath)) return;
 
         try {
-            const result = await this.storage.saveSnapshot(doc, 'save');
+            let label = undefined;
+            
+            // Smart Summaries
+            if (this.aiService.isEnabled('smartSummaries')) {
+                const history = await this.storage.getHistoryForFile(doc.uri);
+                if (history.length > 0) {
+                    const prev = history[0]; // Latest snapshot before this save
+                    const prevPath = (await this.storage.getSnapshotUri(prev, doc.uri)).fsPath;
+                    const diff = await this.gitService.getDiff(prevPath, doc.fileName);
+                    
+                    if (diff && diff.trim().length > 0) {
+                        label = await this.aiService.summarizeDiff(diff);
+                    }
+                }
+            }
+
+            const result = await this.storage.saveSnapshot(doc, 'save', label);
             if (result) {
-                vscode.window.setStatusBarMessage('Snapshot: ' + relativePath, 2000);
+                const msg = label ? `Snapshot: ${label}` : `Snapshot: ${relativePath}`;
+                vscode.window.setStatusBarMessage(msg, 3000);
             }
         } catch (e) {
             console.error('[HistoryManager] Save failed:', e);
@@ -167,10 +219,6 @@ export class HistoryManager {
 
         const deletedFiles: string[] = [];
         if (!vscode.workspace.workspaceFolders) return [];
-        
-        // We assume single root for simplicity or check against all roots
-        // For multi-root, we might need to handle it better, but for now let's assume relative paths resolve against the first root or we find the right one.
-        // Actually, storage saves relative paths. We should check against the workspace folders.
         
         for (const relativePath of allPaths) {
             let exists = false;

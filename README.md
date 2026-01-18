@@ -30,54 +30,51 @@ This opens a timeline of every automatic snapshot taken for the **currently acti
 **A local "Time Machine" for your uncommitted work.**
 This is unique to the Chronos extension. It tracks changes locally on your machine, completely independent of Git.
 *   **How it works:** It filters your local Chronos snapshots to find only those where the selected lines were modified.
-*   **What it shows:** A timeline of your local edits (auto-saves) that affected that specific block of code.
 *   **Side-by-Side View:** By default, clicking a snapshot opens VS Code's native side-by-side diff editor, scoped specifically to the selected lines.
 
 #### 3. Git History for Selection
 **The direct equivalent to JetBrains' "Show History for Selection".**
-This feature integrates deeply with Git to track the evolution of specific lines of code, even if you haven't been running this extension.
+This feature integrates deeply with Git to track the evolution of specific lines of code.
 *   **How it works:** It runs a `git log -L` command on the selected lines.
-*   **What it shows:** It displays a list of every Git commit that touched those lines.
 *   **Diff View:** Select any commit to see exactly how those lines changed in that specific version, using the native side-by-side diff viewer.
 
 #### 4. Show Project History
 **The Global Activity Feed.**
-This provides a bird's-eye view of changes across your **entire workspace**. It lists snapshots from all files, sorted chronologically. This is useful for answering the question: *"What was I working on yesterday across the whole project?"*
+This provides a bird's-eye view of changes across your **entire workspace**. It lists snapshots from all files, sorted chronologically.
 
 #### 5. Show Recent Changes
 **The "What just happened?" view.**
-A streamlined, high-priority view of the most recent modifications. While Project History shows a long timeline, Recent Changes is optimized for quick context switching.
+A streamlined, high-priority view of the most recent modifications—helping you remember the last few files you touched before a break.
 
 #### 6. Put Label
 **Manual Checkpoints.**
-Chronos takes snapshots automatically, but sometimes you want to mark a specific moment (e.g., *"Right before the big API refactor"*). Putting a label creates a **named bookmark** in your timeline.
+Chronos takes snapshots automatically, but sometimes you want to mark a specific moment (e.g., *"Right before the big API refactor"*).
 
 ---
 
 ## 🌟 New Features
 
+### ✨ AI-Powered Insights (Gemini)
+Chronos now integrates with Google Gemini to provide intelligent analysis of your code history.
+*   **Smart Summaries:** Automatically generates concise (5-word) labels for your snapshots based on code diffs.
+*   **"Explain This Change":** A dedicated button in the History View that provides an AI explanation of the *intent* and *logic* behind any snapshot.
+*   **Experiment Post-Mortem:** When stopping an "Experiment", Gemini generates a summary of your work or suggests a commit message.
+
 ### ↔️ Side-by-Side Diffs
-Enjoy a unified experience. Whether viewing local history or Git commits, Chronos now uses VS Code's native side-by-side diff editor by default. This provides syntax highlighting, intellisense, and a familiar interface for reviewing changes.
+Whether viewing local history or Git commits, Chronos uses VS Code's native side-by-side diff editor by default. This provides syntax highlighting, intellisense, and a familiar interface.
 *   **Toggle:** Prefer the old inline view? Disable `chronos.showDiffSideBySide` in settings.
 
 ### 🧪 Local Experiments (Safe Mode)
 Safely try out risky refactors without Git branches.
-*   **Start:** Run command `Chronos: Start Experiment` (or use context menu if enabled).
+*   **Start:** Use the Command Palette (`Cmd+Shift+P`) -> `Chronos: Start Experiment`.
 *   **Manage:** Use the Status Bar item to "Keep" or "Discard" the experiment.
 *   **Discard:** Instantly reverts your file to the state before the experiment started.
-*   **Configuration:** Enable/Disable via `chronos.experiments`.
 
 ### 🔍 Full-Text History Search
-Forgot where you wrote that one clever function? Search through your entire history of snapshots.
-*   **How:** Open any History View and use the search bar at the top.
+Search through your entire history of snapshots using the search bar at the top of any History View.
 
 ### ♻️ Deleted File Resurrection
-Accidentally deleted a file? Chronos remembers.
-*   **Access:** Open the "Chronos" sidebar view.
-*   **Action:** Find your deleted file in the "Deleted Files" list and click the restore icon.
-
-### 📈 Activity View
-See where you've been most active in the last 24 hours via the "Recent Activity" list in the Chronos sidebar.
+Accidentally deleted a file? Find your deleted file in the "Deleted Files" list in the Chronos sidebar and click the restore icon.
 
 ---
 
@@ -87,18 +84,21 @@ Tune the extension in **Settings** (`Cmd+,` -> search `chronos`):
 
 | Setting | Default | Description |
 | :--- | :--- | :--- |
-| `chronos.enabled` | `true` | Turn the entire system on/off. |
-| `chronos.maxDays` | `30` | Days to keep history before pruning. |
-| `chronos.exclude` | `node_modules`, ... | Folders to ignore. |
-| `chronos.showDiffSideBySide` | `true` | Use native side-by-side diff editor. Disable for inline view. |
+| `chronos.ai.apiKey` | `""` | Your Google Gemini API Key. |
+| `chronos.ai.model` | `gemini-2.0-flash` | Gemini Model ID (e.g., `gemini-3-flash-preview`). |
+| `chronos.ai.smartSummaries` | `true` | Auto-generate AI summaries for new snapshots. |
+| `chronos.ai.explainChanges` | `true` | Enable the "Explain" button in history view. |
+| `chronos.ai.experimentPostMortem` | `true` | Generate AI insights when stopping experiments. |
+| `chronos.showDiffSideBySide` | `true` | Use native side-by-side diff editor. |
 | `chronos.diff.syncScroll` | `true` | Synchronize scrolling in diff view. |
-| `chronos.experiments` | `true` | Enable the "Start Experiment" feature menu item. |
-| `chronos.saveInProjectFolder` | `false` | If true, saves history in `.history/` inside your project. |
+| `chronos.experiments` | `true` | Enable the "Experiments" functionality. |
+| `chronos.maxDays` | `30` | Days to keep history before pruning. |
+| `chronos.saveInProjectFolder` | `false` | Save history in `.history/` inside your project. |
 
 ---
 
 ## 🛡️ Data & Privacy
-**Your code stays yours.** All history is stored locally on your machine. No data is ever sent to any server.
+**Your code stays yours.** All history is stored locally. If AI features are enabled, only the relevant code diffs are sent to Google Gemini for analysis. No data is ever persisted by the extension on any remote server.
 
 ---
 

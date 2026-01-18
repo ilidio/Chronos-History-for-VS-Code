@@ -67,6 +67,31 @@
           "default": true,
           "description": "Synchronize scrolling in the diff view."
         },
+        "chronos.ai.apiKey": {
+          "type": "string",
+          "default": "",
+          "description": "Google Gemini API Key for AI features."
+        },
+        "chronos.ai.model": {
+          "type": "string",
+          "default": "gemini-2.0-flash",
+          "description": "Gemini Model ID to use (e.g., gemini-2.0-flash, gemini-1.5-pro)."
+        },
+        "chronos.ai.smartSummaries": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically generate AI summaries for new snapshots."
+        },
+        "chronos.ai.explainChanges": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show 'Explain' button in history view to analyze changes with AI."
+        },
+        "chronos.ai.experimentPostMortem": {
+          "type": "boolean",
+          "default": true,
+          "description": "Generate AI insights/summaries when stopping an experiment."
+        },
         "chronos.exclude": {
           "type": "array",
           "items": {
@@ -238,11 +263,6 @@
         {
           "command": "chronos.putLabel",
           "group": "3_global@3"
-        },
-        {
-          "command": "chronos.startExperiment",
-          "group": "3_global@4",
-          "when": "config.chronos.experiments"
         }
       ]
     },
@@ -266,6 +286,7 @@
     "typescript": "^5.1.0"
   },
   "dependencies": {
+    "@google/genai": "^1.37.0",
     "date-fns": "^2.30.0",
     "glob": "^10.0.0",
     "minimatch": "^9.0.0",

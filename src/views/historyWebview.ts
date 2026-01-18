@@ -23,7 +23,7 @@ export class HistoryViewProvider {
             
             .main-view { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
             .details-header { padding: 10px; border-bottom: 1px solid var(--vscode-panel-border); background-color: var(--vscode-editor-background); display: none; }
-            .actions { margin-top: 5px; display: flex; gap: 8px; justify-content: flex-start; }
+            .actions { margin-top: 5px; display: flex; gap: 8px; justify-content: flex-start; align-items: center; }
             .actions button { 
                 background: var(--vscode-button-background); 
                 color: var(--vscode-button-foreground); 
@@ -35,6 +35,16 @@ export class HistoryViewProvider {
             }
             .actions button:hover { background: var(--vscode-button-hoverBackground); }
             
+            .explanation-box {
+                margin-top: 10px;
+                padding: 10px;
+                background-color: var(--vscode-textBlockQuote-background);
+                border-left: 3px solid var(--vscode-textBlockQuote-border);
+                font-size: 0.9em;
+                display: none;
+                white-space: pre-wrap;
+            }
+
             .diff-container { flex: 1; overflow: auto; background-color: var(--vscode-editor-background); }
             .empty-state { display: flex; align-items: center; justify-content: center; height: 100%; opacity: 0.5; text-align: center; padding: 40px; font-style: italic; }
             
@@ -48,7 +58,7 @@ export class HistoryViewProvider {
         `;
     }
 
-    public show(snapshots: Snapshot[], currentFileUri: vscode.Uri | undefined, getDiff: ((s: Snapshot) => Promise<string>) | undefined, selection?: vscode.Range, onSearch?: (query: string) => Promise<Snapshot[]>) {
+    public show(snapshots: Snapshot[], currentFileUri: vscode.Uri | undefined, getDiff: ((s: Snapshot) => Promise<string>) | undefined, selection?: vscode.Range, onSearch?: (query: string) => Promise<Snapshot[]>, onExplain?: (s: Snapshot) => Promise<string>) {
         const panel = vscode.window.createWebviewPanel(
             HistoryViewProvider.viewType,
             'Chronos History',
@@ -69,6 +79,7 @@ export class HistoryViewProvider {
 
         const config = vscode.workspace.getConfiguration('chronos');
         const showDiffSideBySide = config.get<boolean>('showDiffSideBySide', true);
+        const explainEnabled = !!onExplain;
 
         panel.webview.onDidReceiveMessage(
             async message => {
@@ -85,7 +96,8 @@ export class HistoryViewProvider {
                             snapshots,
                             selection: selectionData,
                             filePath: currentFileUri ? currentFileUri.fsPath : '',
-                            showDiffSideBySide
+                            showDiffSideBySide,
+                            explainEnabled
                         });
                         return;
                     case 'openDiff':
@@ -102,6 +114,16 @@ export class HistoryViewProvider {
                             }
                         }
                         return;
+                    case 'explain':
+                        if (onExplain) {
+                            try {
+                                const text = await onExplain(message.snapshot);
+                                panel.webview.postMessage({ command: 'explainResult', text });
+                            } catch (e) {
+                                panel.webview.postMessage({ command: 'explainResult', text: 'Error generating explanation: ' + e });
+                            }
+                        }
+                        return;
                     case 'restore':
                         vscode.commands.executeCommand('chronos.restoreSnapshot', message.snapshotId, message.filePath);
                         return;
@@ -113,7 +135,8 @@ export class HistoryViewProvider {
                                 snapshots: results,
                                 selection: null,
                                 filePath: 'Search Results: "' + message.query + '"',
-                                showDiffSideBySide
+                                showDiffSideBySide,
+                                explainEnabled
                             });
                         }
                         return;
@@ -170,7 +193,9 @@ export class HistoryViewProvider {
                     <div id="detailsHeader" class="details-header">
                         <div class="actions">
                             <button id="btnRestore">Restore Snapshot</button>
+                            <button id="btnExplain" style="display:none; margin-left:8px">✨ Explain</button>
                         </div>
+                        <div id="explanationBox" class="explanation-box"></div>
                     </div>
                     <div id="diffContainer" class="diff-container">
                         <div class="empty-state">Select a snapshot to view changes</div>
@@ -183,6 +208,7 @@ export class HistoryViewProvider {
                 let currentSelection = null;
                 let baseFilePath = '';
                 let showDiffSideBySide = true;
+                let explainEnabled = false;
 
                 function log(text) {
                     vscode.postMessage({ command: 'log', text: text });
@@ -208,6 +234,7 @@ export class HistoryViewProvider {
                         currentSelection = msg.selection;
                         baseFilePath = msg.filePath;
                         showDiffSideBySide = msg.showDiffSideBySide;
+                        explainEnabled = msg.explainEnabled;
                         
                         if (showDiffSideBySide) {
                             document.getElementById('diffContainer').style.display = 'none';
@@ -221,6 +248,14 @@ export class HistoryViewProvider {
                     } else if (msg.command === 'diffLoaded') {
                         log('Received diffLoaded');
                         renderDiff(msg.diff);
+                    } else if (msg.command === 'explainResult') {
+                        const btn = document.getElementById('btnExplain');
+                        btn.textContent = '✨ Explain';
+                        btn.disabled = false;
+                        
+                        const box = document.getElementById('explanationBox');
+                        box.style.display = 'block';
+                        box.textContent = msg.text;
                     }
                 });
 
@@ -238,7 +273,7 @@ export class HistoryViewProvider {
                                 '<span>' + date.toLocaleTimeString([], {hour: "2-digit", minute: "2-digit"}) + '</span>' + 
                             '</div>' + 
                             (s.label ? '<div class="label-badge">' + s.label + '</div>' : '') + 
-                            '<div style="font-size:0.75em; opacity:0.6; margin-top:4px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap">' + s.filePath + '</div>' + 
+                            '<div style="font-size:0.75em; opacity:0.6; margin-top:4px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap">' + s.filePath + '</div>' +
                             '<div style="font-size:0.85em; opacity:0.6">' + date.toLocaleDateString() + '</div>' + 
                         '</div>';
                     }).join('');
@@ -250,10 +285,24 @@ export class HistoryViewProvider {
                     entries.forEach((e, idx) => e.classList.toggle('selected', idx === i));
                     
                     document.getElementById('detailsHeader').style.display = 'block';
+                    document.getElementById('explanationBox').style.display = 'none';
                     document.getElementById('btnRestore').onclick = (e) => {
                         e.stopPropagation();
                         vscode.postMessage({ command: 'restore', snapshotId: s.id, filePath: s.filePath });
                     };
+
+                    const btnExplain = document.getElementById('btnExplain');
+                    if (explainEnabled) {
+                        btnExplain.style.display = 'inline-block';
+                        btnExplain.onclick = (e) => {
+                            e.stopPropagation();
+                            btnExplain.textContent = 'Thinking...';
+                            btnExplain.disabled = true;
+                            vscode.postMessage({ command: 'explain', snapshotId: s.id, snapshot: s });
+                        };
+                    } else {
+                        btnExplain.style.display = 'none';
+                    }
 
                     if (showDiffSideBySide) {
                         vscode.postMessage({
@@ -275,7 +324,6 @@ export class HistoryViewProvider {
                         return;
                     }
                     container.innerHTML = '<pre>' + diff.split(/\\r?\\n/).map(line => {
-                        // Skip raw git headers for cleaner view
                         if (line.startsWith('diff --git') || line.startsWith('index') || line.startsWith('---') || line.startsWith('+++') || line.startsWith('new file mode') || line.startsWith('deleted file mode')) {
                             return '';
                         }
@@ -284,7 +332,6 @@ export class HistoryViewProvider {
                         if (line.startsWith("+") && !line.startsWith("+++")) cls = "diff-add";
                         else if (line.startsWith("-") && !line.startsWith("---")) cls = "diff-del";
                         else if (line.startsWith("@@")) cls = "diff-meta";
-                        // Note: We skip 'diff-header' class lines essentially by filtering above
                         return '<div class="diff-line"><div class="' + cls + '">' + escapeHtml(line) + '</div></div>';
                     }).join('') + '</pre>';
                 }
@@ -369,6 +416,7 @@ export class HistoryViewProvider {
                 }
                 function select(i) {
                     const c = commits[i];
+                    log('Selected commit ' + i);
                     const entries = document.querySelectorAll('.entry');
                     entries.forEach((e, idx) => e.classList.toggle('selected', idx === i));
                     
@@ -389,7 +437,6 @@ export class HistoryViewProvider {
                         return;
                     }
                     container.innerHTML = '<pre>' + diff.split(/\\r?\\n/).map(line => {
-                        // Skip raw git headers for cleaner view
                         if (line.startsWith('diff --git') || line.startsWith('index') || line.startsWith('---') || line.startsWith('+++') || line.startsWith('new file mode') || line.startsWith('deleted file mode')) {
                             return '';
                         }
@@ -398,7 +445,6 @@ export class HistoryViewProvider {
                         if (line.startsWith("+") && !line.startsWith("+++")) cls = "diff-add";
                         else if (line.startsWith("-") && !line.startsWith("---")) cls = "diff-del";
                         else if (line.startsWith("@@")) cls = "diff-meta";
-                        // Note: We skip 'diff-header' class lines essentially by filtering above
                         return '<div class="diff-line"><div class="' + cls + '">' + escapeHtml(line) + '</div></div>';
                     }).join('') + '</pre>';
                 }
