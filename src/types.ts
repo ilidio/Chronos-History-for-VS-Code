@@ -6,6 +6,7 @@ export interface Snapshot {
     storagePath?: string; // Filename in the storage directory
     label?: string;
     description?: string;
+    relevantRange?: { start: number; end: number };
 }
 
 export interface HistoryEntry extends Snapshot {
@@ -37,4 +38,5 @@ export interface GitCommit {
     date: string;
     message: string;
     diff: string;
+    relevantRange?: { start: number; end: number };
 }

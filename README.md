@@ -54,6 +54,29 @@ Chronos takes snapshots automatically, but sometimes you want to mark a specific
 
 ---
 
+## 🌟 New Features
+
+### 🔍 Full-Text History Search
+Forgot where you wrote that one clever function? Search through your entire history of snapshots.
+*   **How:** Open any History View and use the search bar at the top.
+
+### 🧪 Local Experiments
+Safely try out risky refactors without Git branches.
+*   **Start:** Run command `Chronos: Start Experiment`.
+*   **Manage:** Use the Status Bar item to "Keep" or "Discard" the experiment.
+*   **Discard:** Instantly reverts your file to the state before the experiment started.
+
+### ♻️ Deleted File Resurrection
+Accidentally deleted a file? Chronos remembers.
+*   **Access:** Open the "Chronos" sidebar view.
+*   **Action:** Find your deleted file in the "Deleted Files" list and click the restore icon.
+
+### 📈 Activity View
+See where you've been most active in the last 24 hours.
+*   **Access:** "Recent Activity" list in the Chronos sidebar.
+
+---
+
 ## 🚀 Installation
 
 1. Open VS Code.

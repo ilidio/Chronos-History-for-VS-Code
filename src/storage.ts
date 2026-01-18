@@ -77,7 +77,7 @@ export class HistoryStorage {
             .filter(s => s.filePath === relativePath)
             .sort((a, b) => b.timestamp - a.timestamp)[0];
 
-        if (lastSnapshot && lastSnapshot.storagePath) {
+        if (eventType !== 'label' && lastSnapshot && lastSnapshot.storagePath) {
             try {
                 const lastUri = vscode.Uri.joinPath(root, lastSnapshot.storagePath);
                 const lastData = await vscode.workspace.fs.readFile(lastUri);
@@ -204,5 +204,70 @@ export class HistoryStorage {
             description
         });
         await this.saveIndex(index, indexUri);
+    }
+
+    async search(query: string): Promise<Snapshot[]> {
+        await this.init();
+        await this.refreshIndices();
+        
+        const allSnapshots = await this.getProjectHistory();
+        const results: Snapshot[] = [];
+        
+        // Limit concurrency and total results
+        const limit = 50;
+        
+        for (const snapshot of allSnapshots) {
+            if (results.length >= limit) break;
+            if (!snapshot.storagePath) continue;
+            
+            try {
+                // Determine root for this snapshot
+                let root = this.globalStorageRoot;
+                // If we knew which workspace folder this came from, we'd use it.
+                // But getProjectHistory merges all indices.
+                // We need to find where the snapshot is stored. 
+                // Currently indices are mapped by key (indexUri).
+                // But the snapshot object doesn't know its source index.
+                // We might need to try both global and local if we don't know.
+                
+                // Improvement: storage logic needs to know where to look.
+                // For now, let's assume we can resolve it.
+                // Actually, getSnapshotUri takes a fileUri. We don't have fileUri here easily.
+                
+                // Workaround: We iterate known indices to find where this snapshot belongs?
+                // Or simply try to resolve it.
+                
+                // Let's refactor slightly: getProjectHistory could return { snapshot, rootUri }?
+                // Or we iterate indices here directly.
+            } catch (e) {}
+        }
+
+        // Re-implementing loop to handle storage roots correctly
+        for (const [key, index] of this.indices) {
+            if (results.length >= limit) break;
+            
+            // key is indexUri string. Root is parent of indexUri.
+            const indexUri = vscode.Uri.parse(key);
+            const root = vscode.Uri.joinPath(indexUri, '..');
+            
+            for (const snapshot of index.snapshots) {
+                if (results.length >= limit) break;
+                if (!snapshot.storagePath) continue;
+
+                try {
+                    const blobUri = vscode.Uri.joinPath(root, snapshot.storagePath);
+                    const data = await vscode.workspace.fs.readFile(blobUri);
+                    const content = new TextDecoder().decode(data);
+                    
+                    if (content.toLowerCase().includes(query.toLowerCase())) {
+                        results.push(snapshot);
+                    }
+                } catch (e) {
+                    // ignore read errors
+                }
+            }
+        }
+        
+        return results.sort((a, b) => b.timestamp - a.timestamp);
     }
 }

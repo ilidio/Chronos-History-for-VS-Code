@@ -52,6 +52,21 @@
           "default": true,
           "description": "Enable tracking history for text selections."
         },
+        "chronos.experiments": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable the 'Experiments' feature, which allows you to start a temporary coding session (safe checkpoint) and easily keep or discard changes."
+        },
+        "chronos.showDiffSideBySide": {
+          "type": "boolean",
+          "default": true,
+          "description": "If enabled, opens history comparisons in the native VS Code side-by-side diff editor. If disabled, shows inline diffs within the Chronos view."
+        },
+        "chronos.diff.syncScroll": {
+          "type": "boolean",
+          "default": true,
+          "description": "Synchronize scrolling in the diff view."
+        },
         "chronos.exclude": {
           "type": "array",
           "items": {
@@ -126,9 +141,65 @@
         "command": "chronos.compareToCurrent",
         "title": "Compare with Current",
         "category": "Chronos"
+      },
+      {
+        "command": "chronos.restoreDeletedFile",
+        "title": "Restore File",
+        "category": "Chronos",
+        "icon": "$(reply)"
+      },
+      {
+        "command": "chronos.previewDeletedFile",
+        "title": "Preview Deleted File",
+        "category": "Chronos",
+        "icon": "$(eye)"
+      },
+      {
+        "command": "chronos.startExperiment",
+        "title": "Start Experiment",
+        "category": "Chronos",
+        "icon": "$(beaker)"
+      },
+      {
+        "command": "chronos.manageExperiment",
+        "title": "Manage Experiment",
+        "category": "Chronos"
       }
     ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "chronos-sidebar",
+          "title": "Chronos",
+          "icon": "resources/icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "chronos-sidebar": [
+        {
+          "id": "chronos.deletedFiles",
+          "name": "Deleted Files"
+        },
+        {
+          "id": "chronos.activity",
+          "name": "Recent Activity (24h)"
+        }
+      ]
+    },
     "menus": {
+      "view/item/context": [
+        {
+          "command": "chronos.restoreDeletedFile",
+          "when": "view == chronos.deletedFiles && viewItem == deletedFile",
+          "group": "inline"
+        },
+        {
+          "command": "chronos.previewDeletedFile",
+          "when": "view == chronos.deletedFiles && viewItem == deletedFile",
+          "group": "inline"
+        }
+      ],
       "editor/context": [
         {
           "submenu": "chronos/context",
@@ -144,29 +215,34 @@
       "chronos/context": [
         {
           "command": "chronos.showHistory",
-          "group": "1_local"
+          "group": "1_local@1"
         },
         {
           "command": "chronos.showHistoryForSelection",
-          "group": "1_local",
+          "group": "1_local@2",
           "when": "editorHasSelection"
         },
         {
           "command": "chronos.gitHistoryForSelection",
-          "group": "2_git",
+          "group": "2_git@1",
           "when": "editorHasSelection"
         },
         {
           "command": "chronos.showProjectHistory",
-          "group": "3_global"
+          "group": "3_global@1"
         },
         {
           "command": "chronos.showRecentChanges",
-          "group": "3_global"
+          "group": "3_global@2"
         },
         {
           "command": "chronos.putLabel",
-          "group": "4_actions"
+          "group": "3_global@3"
+        },
+        {
+          "command": "chronos.startExperiment",
+          "group": "3_global@4",
+          "when": "config.chronos.experiments"
         }
       ]
     },
