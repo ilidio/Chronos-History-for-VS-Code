@@ -2,7 +2,7 @@
   "name": "chronos-history",
   "displayName": "Chronos History",
   "description": "Comprehensive Chronos and Git History tracking for VS Code.",
-  "version": "0.0.3",
+  "version": "1.0.0",
   "publisher": "IldioMartins",
   "license": "MIT",
   "icon": "resources/icon.png",

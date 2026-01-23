@@ -103,4 +103,32 @@ Tune the extension in **Settings** (`Cmd+,` -> search `chronos`):
 
 ---
 
+## 📦 Packaging & Versioning
+
+You can use the included `package.sh` script to build the `.vsix` package. This script also supports automatic version bumping.
+
+**Usage:**
+
+```bash
+# Just build the package
+./package.sh
+
+# Build and increment patch version (0.0.X -> 0.0.X+1)
+./package.sh patch
+
+# Build and increment minor version (0.X.0 -> 0.X+1.0)
+./package.sh minor
+
+# Build and increment major version (X.0.0 -> X+1.0.0)
+./package.sh major
+```
+
+The script will:
+1.  (Optional) Increment the version in `package.json`.
+2.  Clean previous builds.
+3.  Install dependencies and compile the extension.
+4.  Package everything into a `.vsix` file ready for the Marketplace.
+
+---
+
 **[Contributing / Developer Guide](https://github.com/ilidio/Chronos/blob/main/CONTRIBUTING.md)**
