@@ -59,7 +59,10 @@ export class HistoryFilter {
                     const hunks = this.parseHunks(diff);
     
                     if (this.isRelevant(currentRange, hunks)) {
-                        relevantSnapshots.push(newSnapshot);
+                        relevantSnapshots.push({
+                            ...newSnapshot,
+                            relevantRange: { start: currentRange.start.line, end: currentRange.end.line }
+                        });
                         console.log(`[HistoryFilter] Relevant snapshot found: ${newSnapshot.id} (${newSnapshot.label || newSnapshot.eventType})`);
                     }
     
@@ -73,7 +76,11 @@ export class HistoryFilter {
             }
     
             // Check the oldest snapshot?
-            relevantSnapshots.push(sortedHistory[sortedHistory.length - 1]);
+            const oldest = sortedHistory[sortedHistory.length - 1];
+            relevantSnapshots.push({
+                ...oldest,
+                relevantRange: { start: currentRange.start.line, end: currentRange.end.line }
+            });
             console.log(`[HistoryFilter] Found ${relevantSnapshots.length} relevant snapshots.`);
     
             return relevantSnapshots;

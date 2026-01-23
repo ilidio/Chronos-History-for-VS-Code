@@ -16,7 +16,7 @@ export class GitService {
         const range = `${startLine + 1},${endLine + 1}`;
         const relativePath = path.relative(workspaceFolder.uri.fsPath, filePath);
 
-        const args = ['log', `-L${range}:${relativePath}`];
+        const args = ['-c', 'color.ui=false', 'log', `-L${range}:${relativePath}`];
         
         // Since we are parsing manually, we can't easily limit commits via git args for -L
         // (git log -L doesn't always play nice with -n). We will limit during parsing.
@@ -43,7 +43,7 @@ export class GitService {
 
     async getDiff(file1: string, file2: string): Promise<string> {
         // git diff --no-index <file1> <file2>
-        const args = ['diff', '--no-index', file1, file2];
+        const args = ['-c', 'color.ui=false', 'diff', '--no-index', file1, file2];
         
         return new Promise((resolve, reject) => {
             // We use cwd as the dirname of one of the files or root, doesn't matter much for --no-index
@@ -63,6 +63,15 @@ export class GitService {
                      return;
                 }
                 resolve(stdout);
+            });
+        });
+    }
+
+    async getLastCommitTimestamp(cwd: string): Promise<number> {
+        return new Promise((resolve) => {
+            cp.exec('git log -1 --format=%ct', { cwd }, (err, stdout) => {
+                if (err) resolve(0);
+                else resolve(parseInt(stdout.trim()) * 1000);
             });
         });
     }
