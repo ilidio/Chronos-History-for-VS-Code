@@ -71,6 +71,7 @@ export class HistoryViewProvider {
                 case 'getDiff': if (getDiff) { try { const diff = await getDiff(message.snapshot); panel.webview.postMessage({ command: 'diffLoaded', diff }); } catch (e) { panel.webview.postMessage({ command: 'diffLoaded', diff: 'Error: ' + e }); } } return;
                 case 'explain': if (onExplain) { const text = await onExplain(message.snapshot); panel.webview.postMessage({ command: 'explainResult', text }); } return;
                 case 'restore': vscode.commands.executeCommand('chronos.restoreSnapshot', message.snapshotId, message.filePath); return;
+                case 'share': vscode.commands.executeCommand('chronos.shareSnapshot', message.snapshot); return;
                 case 'search': if (onSearch) { const results = await onSearch(message.query); panel.webview.postMessage({ command: 'loadHistory', snapshots: results, selection: null, filePath: 'Search: ' + message.query }); } return;
                 case 'semanticSearch': if (onSemanticSearch) { const results = await onSemanticSearch(message.query); panel.webview.postMessage({ command: 'loadHistory', snapshots: results, selection: null, filePath: 'AI Search: ' + message.query }); } return;
             }
@@ -96,8 +97,10 @@ export class HistoryViewProvider {
                 <button id="btnSemantic" class="btn-semantic" title="Semantic AI Search">🧠</button>
             </div>
             <div id="list" class="list"></div>
-        </div><div class="main-view"><div id="detailsHeader" class="details-header"><div class="actions">
-            <button id="btnRestore">Restore</button><button id="btnExplain" style="display:none">✨ Explain</button>
+        <div class="main-view"><div id="detailsHeader" class="details-header"><div class="actions">
+            <button id="btnRestore">Restore</button>
+            <button id="btnShare">Share</button>
+            <button id="btnExplain" style="display:none">✨ Explain</button>
         </div><div id="explanationBox" class="explanation-box"></div></div><div id="diffContainer" class="diff-container">
         <div class="empty-state">Select a snapshot</div></div></div></div>
         <script>
@@ -129,7 +132,7 @@ export class HistoryViewProvider {
             }
             function renderEntry(s, id) {
                 const date = new Date(s.timestamp);
-                const mag = (s.linesAdded || s.linesDeleted) ? '<div class="magnitude">' + (s.linesAdded ? '<span class="mag-add">+' + s.linesAdded + '</span>' : '') + (s.linesDeleted ? '<span class="mag-del">-' + s.linesDeleted + '</span>' : '') + '</div>' : '';
+                const mag = (s.linesAdded || s.linesDeleted) ? '<div class="magnitude">' + (s.linesAdded ? '<span class="mag-add">+' + s.linesAdded + '</span>' : '') + (s.linesDeleted ? '<span="mag-del">-' + s.linesDeleted + '</span>' : '') + '</div>' : '';
                 return '<div class="entry" id="entry-' + id + '" onclick="selectSnapshot(' + (typeof id === 'string' ? "'" + id + "'" : id) + ')">' + 
                     '<div class="header"><span class="event-type">' + s.eventType + '</span><span>' + date.toLocaleTimeString([], {hour: "2-digit",minute: "2-digit"}) + '</span></div>' + 
                     (s.label ? '<div class="label-badge">' + s.label + '</div>' : '') + 
@@ -145,6 +148,7 @@ export class HistoryViewProvider {
                 document.getElementById('detailsHeader').style.display = 'block';
                 document.getElementById('explanationBox').style.display = 'none';
                 document.getElementById('btnRestore').onclick = () => vscode.postMessage({ command: 'restore', snapshotId: s.id, filePath: s.filePath });
+                document.getElementById('btnShare').onclick = () => vscode.postMessage({ command: 'share', snapshot: s });
                 if (explainEnabled) { 
                     const btn = document.getElementById('btnExplain'); btn.style.display = 'inline-block'; 
                     btn.onclick = () => { btn.textContent = 'Thinking...'; btn.disabled = true; vscode.postMessage({ command: 'explain', snapshot: s }); };

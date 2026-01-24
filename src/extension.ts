@@ -12,6 +12,7 @@ import { ActivityProvider } from './views/activityProvider';
 import { GitService } from './git/gitService';
 import { AIService } from './ai/aiService';
 import { BackupService } from './backup';
+import { ProjectRestorer } from './timeTravel';
 import { Snapshot, GitCommit } from './types';
 
 let storage: HistoryStorage;
@@ -24,6 +25,7 @@ let activityProvider: ActivityProvider;
 let gitService: GitService;
 let aiService: AIService;
 let backupService: BackupService;
+let projectRestorer: ProjectRestorer;
 let outputChannel: vscode.OutputChannel;
 
 export function activate(context: vscode.ExtensionContext) {
@@ -43,6 +45,7 @@ export function activate(context: vscode.ExtensionContext) {
     deletedFilesProvider = new DeletedFilesProvider(manager, storage);
     activityProvider = new ActivityProvider(storage);
     backupService = new BackupService(storage);
+    projectRestorer = new ProjectRestorer(storage, manager);
 
     vscode.window.registerTreeDataProvider('chronos.deletedFiles', deletedFilesProvider);
     vscode.window.registerTreeDataProvider('chronos.activity', activityProvider);
@@ -56,6 +59,7 @@ export function activate(context: vscode.ExtensionContext) {
         vscode.commands.registerCommand('chronos.putLabel', putLabel),
         vscode.commands.registerCommand('chronos.compareToCurrent', compareToCurrent),
         vscode.commands.registerCommand('chronos.restoreSnapshot', restoreSnapshot),
+        vscode.commands.registerCommand('chronos.restoreProject', () => projectRestorer.restoreProjectState()),
         vscode.commands.registerCommand('chronos.gitHistoryForSelection', gitHistoryForSelection),
         vscode.commands.registerCommand('chronos.restoreDeletedFile', restoreDeletedFile),
         vscode.commands.registerCommand('chronos.previewDeletedFile', previewDeletedFile),
@@ -76,7 +80,9 @@ export function activate(context: vscode.ExtensionContext) {
         vscode.commands.registerCommand('_chronos.openDiffGit', openDiffGit),
         vscode.commands.registerCommand('chronos.showLogs', () => outputChannel.show(true)),
         vscode.commands.registerCommand('chronos.exportHistory', exportHistory),
-        vscode.commands.registerCommand('chronos.importHistory', importHistory)
+        vscode.commands.registerCommand('chronos.importHistory', importHistory),
+        vscode.commands.registerCommand('chronos.shareSnapshot', shareSnapshot),
+        vscode.commands.registerCommand('chronos.importShared', importHistory)
     );
 
     // Refresh views when files change
@@ -341,7 +347,7 @@ async function importHistory() {
         canSelectFiles: true,
         canSelectFolders: false,
         canSelectMany: false,
-        filters: { 'Zip Files': ['zip'] },
+        filters: { 'Chronos Files': ['chronos', 'zip'] },
         openLabel: 'Import History'
     });
     if (uri && uri.length > 0) {
@@ -351,6 +357,24 @@ async function importHistory() {
             activityProvider.refresh();
         } catch (e) {
             vscode.window.showErrorMessage('Import failed: ' + e);
+        }
+    }
+}
+
+async function shareSnapshot(snapshot: Snapshot) {
+    const defaultName = `snapshot_${snapshot.id.substring(0,8)}.chronos`;
+    const uri = await vscode.window.showSaveDialog({
+        defaultUri: vscode.Uri.file(defaultName),
+        filters: { 'Chronos Share': ['chronos'] },
+        saveLabel: 'Share Snapshot'
+    });
+
+    if (uri) {
+        try {
+            await backupService.exportSnapshot(snapshot, uri.fsPath);
+            vscode.window.showInformationMessage('Snapshot ready for sharing: ' + path.basename(uri.fsPath));
+        } catch (e) {
+            vscode.window.showErrorMessage('Sharing failed: ' + e);
         }
     }
 }

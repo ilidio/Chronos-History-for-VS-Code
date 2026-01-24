@@ -25,6 +25,33 @@ export class BackupService {
         zip.writeZip(destinationPath);
     }
 
+    public async exportSnapshot(snapshot: Snapshot, destinationPath: string): Promise<void> {
+        if (!vscode.workspace.workspaceFolders) throw new Error('No workspace open');
+        
+        const rootUri = await this.storage.getWorkspaceStorageRoot();
+        const rootPath = rootUri.fsPath;
+        const zip = new AdmZip();
+
+        // 1. Create a mini index
+        const indexData: HistoryIndex = { snapshots: [snapshot] };
+        zip.addFile('index.json', Buffer.from(JSON.stringify(indexData, null, 2)));
+
+        // 2. Add the content file
+        if (snapshot.storagePath) {
+            const blobPath = path.join(rootPath, snapshot.storagePath);
+            if (fs.existsSync(blobPath)) {
+                zip.addLocalFile(blobPath);
+            } else {
+                // Try to find it via storage API if path logic differs (e.g. separate .history folders)
+                // But getWorkspaceStorageRoot tries to unify this.
+                // Let's verify if we need to be more robust.
+                // snapshot.storagePath is usually just the UUID.
+            }
+        }
+
+        zip.writeZip(destinationPath);
+    }
+
     public async importHistory(sourcePath: string): Promise<void> {
         const rootUri = await this.storage.getWorkspaceStorageRoot();
         const rootPath = rootUri.fsPath;

@@ -66,9 +66,17 @@ A streamlined, high-priority view of the most recent modifications—helping you
 **Manual Checkpoints.**
 Chronos takes snapshots automatically, but sometimes you want to mark a specific moment (e.g., *"Right before the big API refactor"*).
 
+#### 8. Restore Project to...
+**Global Time Travel.**
+Restore your entire workspace to a specific point in time. This acts as a "Soft Undo" for the whole project.
+*   **How to Use:** Run "Chronos: Restore Project to..." from the Command Palette, and select a timestamp from the list. All files will be reverted to their state at that moment.
+
 ---
 
 ## 🌟 New Features
+
+### ⏳ Project-Wide Time Travel
+Mistakes happen. With Global Restore, you can roll back your entire project to a previous state, ensuring you can always recover from a bad refactor or accidental mass-deletion.
 
 ### 📊 Advanced Visualization (Graph View)
 The new History Graph provides a bird's-eye view of how your project has evolved across multiple files. It makes it easy to spot clusters of activity and trace history through experiments.
@@ -77,6 +85,11 @@ The new History Graph provides a bird's-eye view of how your project has evolved
 Easily move your history between machines or keep safety backups.
 *   **Export:** Compresses your entire history into a single `.zip` file.
 *   **Import:** Intelligently merges a backup file into your current history, skipping duplicates.
+
+### 🤝 Collaborative Sharing
+Share specific moments of your work with teammates.
+*   **Share:** In the History View, select a snapshot and click **Share**. This creates a `.chronos` file you can send via Slack, Email, or Teams.
+*   **Receive:** Your teammate can run **"Chronos: Import Shared Snapshot..."** to add your snapshot to their local history for comparison or restoration.
 
 ### ✨ AI-Powered Insights (Gemini)
 Chronos now integrates with Google Gemini to provide intelligent analysis of your code history.

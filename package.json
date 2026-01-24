@@ -164,6 +164,12 @@
         "category": "Chronos"
       },
       {
+        "command": "chronos.restoreProject",
+        "title": "Restore Project to...",
+        "category": "Chronos",
+        "icon": "$(history)"
+      },
+      {
         "command": "chronos.gitHistoryForSelection",
         "title": "Git History for Selection",
         "category": "Git"
@@ -216,6 +222,18 @@
         "command": "chronos.importHistory",
         "title": "Import History...",
         "category": "Chronos"
+      },
+      {
+        "command": "chronos.shareSnapshot",
+        "title": "Share Snapshot...",
+        "category": "Chronos",
+        "icon": "$(export)"
+      },
+      {
+        "command": "chronos.importShared",
+        "title": "Import Shared Snapshot...",
+        "category": "Chronos",
+        "icon": "$(import)"
       }
     ],
     "viewsContainers": {
