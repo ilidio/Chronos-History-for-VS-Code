@@ -25,7 +25,16 @@ export class HistoryStorage {
         }
     }
 
-        private async getStorageForFile(fileUri: vscode.Uri): Promise<{ root: vscode.Uri, indexUri: vscode.Uri }> {
+        async getWorkspaceStorageRoot(): Promise<vscode.Uri> {
+        await this.init();
+        if (vscode.workspace.workspaceFolders && vscode.workspace.workspaceFolders.length > 0) {
+            const { root } = await this.getStorageForFile(vscode.workspace.workspaceFolders[0].uri);
+            return root;
+        }
+        return this.globalStorageRoot;
+    }
+
+    private async getStorageForFile(fileUri: vscode.Uri): Promise<{ root: vscode.Uri, indexUri: vscode.Uri }> {
             const config = vscode.workspace.getConfiguration('chronos');
             const saveInProject = config.get<boolean>('saveInProjectFolder', false);        
         let root = this.globalStorageRoot;

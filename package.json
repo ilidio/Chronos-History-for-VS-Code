@@ -143,6 +143,12 @@
         "category": "Chronos"
       },
       {
+        "command": "chronos.showGraph",
+        "title": "Show History Graph",
+        "category": "Chronos",
+        "icon": "$(git-branch)"
+      },
+      {
         "command": "chronos.showRecentChanges",
         "title": "Show Recent Changes",
         "category": "Chronos"
@@ -199,6 +205,16 @@
       {
         "command": "chronos.showLogs",
         "title": "Show Chronos Logs",
+        "category": "Chronos"
+      },
+      {
+        "command": "chronos.exportHistory",
+        "title": "Export History...",
+        "category": "Chronos"
+      },
+      {
+        "command": "chronos.importHistory",
+        "title": "Import History...",
         "category": "Chronos"
       }
     ],
@@ -295,6 +311,7 @@
     "watch": "tsc -watch -p ./"
   },
   "devDependencies": {
+    "@types/adm-zip": "^0.5.7",
     "@types/node": "^18.0.0",
     "@types/uuid": "^9.0.0",
     "@types/vscode": "^1.80.0",
@@ -303,10 +320,12 @@
   },
   "dependencies": {
     "@google/genai": "^1.37.0",
+    "adm-zip": "^0.5.16",
     "date-fns": "^2.30.0",
     "glob": "^10.0.0",
     "minimatch": "^9.0.0",
     "simple-git": "^3.19.0",
-    "uuid": "^9.0.0"
+    "uuid": "^9.0.0",
+    "vis-network": "^10.0.2"
   }
 }

@@ -16,9 +16,13 @@ Chronos History
  ├─ Git History for Selection  (Git commits for selected lines)
  ├───────────────────────────
  ├─ Show Project History      (Global timeline of all changes)
+ ├─ Show History Graph        (Interactive visualization)
  ├─ Show Recent Changes       (Quick view of latest modifications)
  ├─ Put Label                 (Create a named checkpoint)
  ├─ Generate Commit Message   (AI draft based on local history)
+ ├───────────────────────────
+ ├─ Export History            (Backup to ZIP)
+ ├─ Import History            (Restore from ZIP)
 ```
 
 ### 🛠 Detailed Menu Reference
@@ -43,17 +47,36 @@ This feature integrates deeply with Git to track the evolution of specific lines
 **The Global Activity Feed.**
 This provides a bird's-eye view of changes across your **entire workspace**. It lists snapshots from all files, sorted chronologically.
 
-#### 5. Show Recent Changes
+#### 5. Show History Graph
+**Interactive Visualization.**
+A graphical view of your history that helps visualize parallel changes and experiments.
+*   **🚀 How to Use Show History Graph:**
+    1. Open the Command Palette (`Cmd+Shift+P` / `Ctrl+Shift+P`).
+    2. Run **"Chronos: Show History Graph"**.
+    3. A new editor tab will open displaying the graph.
+        * **Zoom/Pan:** Use mouse wheel and drag to navigate.
+        * **Inspect:** Hover over nodes for details (Timestamp, Event Type, Label).
+        * **Compare:** Double-click a node to see what changed in that snapshot.
+
+#### 6. Show Recent Changes
 **The "What just happened?" view.**
 A streamlined, high-priority view of the most recent modifications—helping you remember the last few files you touched before a break.
 
-#### 6. Put Label
+#### 7. Put Label
 **Manual Checkpoints.**
 Chronos takes snapshots automatically, but sometimes you want to mark a specific moment (e.g., *"Right before the big API refactor"*).
 
 ---
 
 ## 🌟 New Features
+
+### 📊 Advanced Visualization (Graph View)
+The new History Graph provides a bird's-eye view of how your project has evolved across multiple files. It makes it easy to spot clusters of activity and trace history through experiments.
+
+### ☁️ Cloud Sync & Backup (Export/Import)
+Easily move your history between machines or keep safety backups.
+*   **Export:** Compresses your entire history into a single `.zip` file.
+*   **Import:** Intelligently merges a backup file into your current history, skipping duplicates.
 
 ### ✨ AI-Powered Insights (Gemini)
 Chronos now integrates with Google Gemini to provide intelligent analysis of your code history.

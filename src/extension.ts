@@ -6,20 +6,24 @@ import { HistoryStorage } from './storage';
 import { HistoryManager } from './historyManager';
 import { HistoryFilter } from './historyFilter';
 import { HistoryViewProvider } from './views/historyWebview';
+import { GraphViewProvider } from './views/graphWebview';
 import { DeletedFilesProvider, DeletedFileItem } from './views/deletedFilesProvider';
 import { ActivityProvider } from './views/activityProvider';
 import { GitService } from './git/gitService';
 import { AIService } from './ai/aiService';
+import { BackupService } from './backup';
 import { Snapshot, GitCommit } from './types';
 
 let storage: HistoryStorage;
 let manager: HistoryManager;
 let historyFilter: HistoryFilter;
 let viewProvider: HistoryViewProvider;
+let graphViewProvider: GraphViewProvider;
 let deletedFilesProvider: DeletedFilesProvider;
 let activityProvider: ActivityProvider;
 let gitService: GitService;
 let aiService: AIService;
+let backupService: BackupService;
 let outputChannel: vscode.OutputChannel;
 
 export function activate(context: vscode.ExtensionContext) {
@@ -29,6 +33,7 @@ export function activate(context: vscode.ExtensionContext) {
 
     storage = new HistoryStorage(context);
     viewProvider = new HistoryViewProvider(context.extensionUri, outputChannel);
+    graphViewProvider = new GraphViewProvider(context.extensionUri, outputChannel);
     gitService = new GitService();
     aiService = new AIService();
     
@@ -37,6 +42,7 @@ export function activate(context: vscode.ExtensionContext) {
     historyFilter = new HistoryFilter(storage, gitService);
     deletedFilesProvider = new DeletedFilesProvider(manager, storage);
     activityProvider = new ActivityProvider(storage);
+    backupService = new BackupService(storage);
 
     vscode.window.registerTreeDataProvider('chronos.deletedFiles', deletedFilesProvider);
     vscode.window.registerTreeDataProvider('chronos.activity', activityProvider);
@@ -46,6 +52,7 @@ export function activate(context: vscode.ExtensionContext) {
         vscode.commands.registerCommand('chronos.showHistoryForSelection', showHistoryForSelection),
         vscode.commands.registerCommand('chronos.showProjectHistory', showProjectHistory),
         vscode.commands.registerCommand('chronos.showRecentChanges', showRecentChanges),
+        vscode.commands.registerCommand('chronos.showGraph', showGraph),
         vscode.commands.registerCommand('chronos.putLabel', putLabel),
         vscode.commands.registerCommand('chronos.compareToCurrent', compareToCurrent),
         vscode.commands.registerCommand('chronos.restoreSnapshot', restoreSnapshot),
@@ -67,7 +74,9 @@ export function activate(context: vscode.ExtensionContext) {
         }),
         vscode.commands.registerCommand('_chronos.openDiff', openDiff),
         vscode.commands.registerCommand('_chronos.openDiffGit', openDiffGit),
-        vscode.commands.registerCommand('chronos.showLogs', () => outputChannel.show(true))
+        vscode.commands.registerCommand('chronos.showLogs', () => outputChannel.show(true)),
+        vscode.commands.registerCommand('chronos.exportHistory', exportHistory),
+        vscode.commands.registerCommand('chronos.importHistory', importHistory)
     );
 
     // Refresh views when files change
@@ -244,6 +253,12 @@ async function showRecentChanges() {
     viewProvider.show(history.slice(0, 20), undefined, (s: Snapshot) => getDiffForSnapshot(s, undefined), undefined, (q: string) => storage.search(q), undefined, (q: string) => manager.semanticSearch(q));
 }
 
+async function showGraph() {
+    await ensureStorage();
+    const history = await storage.getProjectHistory();
+    graphViewProvider.show(history);
+}
+
 async function explainSnapshot(snapshot: Snapshot, uri?: vscode.Uri): Promise<string> {
     if (!aiService.isEnabled('explainChanges')) return "AI Disabled";
     const diff = await getDiffForSnapshot(snapshot, uri);
@@ -304,6 +319,40 @@ async function gitHistoryForSelection() {
             viewProvider.showGit(commits, editor.document.uri.fsPath, (c: GitCommit) => explainGitCommit(c));
         }
     } catch (e) {}
+}
+
+async function exportHistory() {
+    const uri = await vscode.window.showSaveDialog({
+        filters: { 'Zip Files': ['zip'] },
+        saveLabel: 'Export History'
+    });
+    if (uri) {
+        try {
+            await backupService.exportHistory(uri.fsPath);
+            vscode.window.showInformationMessage('History exported successfully.');
+        } catch (e) {
+            vscode.window.showErrorMessage('Export failed: ' + e);
+        }
+    }
+}
+
+async function importHistory() {
+    const uri = await vscode.window.showOpenDialog({
+        canSelectFiles: true,
+        canSelectFolders: false,
+        canSelectMany: false,
+        filters: { 'Zip Files': ['zip'] },
+        openLabel: 'Import History'
+    });
+    if (uri && uri.length > 0) {
+        try {
+            await backupService.importHistory(uri[0].fsPath);
+            // Refresh views
+            activityProvider.refresh();
+        } catch (e) {
+            vscode.window.showErrorMessage('Import failed: ' + e);
+        }
+    }
 }
 
 export function deactivate() {}
