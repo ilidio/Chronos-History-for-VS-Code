@@ -1,4 +1,5 @@
 import * as vscode from 'vscode';
+import * as path from 'path';
 import { HistoryStorage } from '../storage';
 import { Snapshot } from '../types';
 
@@ -51,9 +52,12 @@ export class ActivityItem extends vscode.TreeItem {
     }
 
     getResourceUri(): vscode.Uri | undefined {
+        if (path.isAbsolute(this.filePath)) {
+            return vscode.Uri.file(this.filePath);
+        }
         if (vscode.workspace.workspaceFolders) {
             return vscode.Uri.joinPath(vscode.workspace.workspaceFolders[0].uri, this.filePath);
         }
-        return undefined;
+        return vscode.Uri.file(this.filePath);
     }
 }

@@ -5,6 +5,125 @@ import { GitCommit, GitHistoryConfig } from '../types';
 
 export class GitService {
     
+    async getWorkspaceChurn(): Promise<{added: number, deleted: number}> {
+        const workspaceFolders = vscode.workspace.workspaceFolders;
+        if (!workspaceFolders) return { added: 0, deleted: 0 };
+
+        const args = ['-c', 'color.ui=false', 'diff', '--shortstat', 'HEAD'];
+        
+        return new Promise((resolve) => {
+            const git = cp.spawn('git', args, { cwd: workspaceFolders[0].uri.fsPath });
+            let stdout = '';
+
+            git.stdout.on('data', data => stdout += data);
+            git.on('error', err => {
+                console.warn('Git churn failed to start:', err);
+                resolve({ added: 0, deleted: 0 });
+            });
+            git.on('close', code => {
+                if (code !== 0 || !stdout.trim()) {
+                    resolve({ added: 0, deleted: 0 });
+                    return;
+                }
+                
+                // Example output: " 1 file changed, 5 insertions(+), 3 deletions(-)"
+                const addedMatch = stdout.match(/(\d+) insertion/);
+                const deletedMatch = stdout.match(/(\d+) deletion/);
+                
+                resolve({
+                    added: addedMatch ? parseInt(addedMatch[1]) : 0,
+                    deleted: deletedMatch ? parseInt(deletedMatch[1]) : 0
+                });
+            });
+        });
+    }
+
+    async getCommitDiff(hash1: string, hash2: string, filePath: string, startLine: number, endLine: number): Promise<string> {
+        const workspaceFolder = vscode.workspace.getWorkspaceFolder(vscode.Uri.file(filePath));
+        if (!workspaceFolder) return "";
+
+        const relativePath = path.relative(workspaceFolder.uri.fsPath, filePath);
+        const range = `${startLine + 1},${endLine + 1}`;
+        // Note: hash1 is base, hash2 is target. To see progress forward, hash1 should be the older commit.
+        const args = ['-c', 'color.ui=false', 'diff', hash1, hash2, `-L${range}:${relativePath}`];
+        
+        return new Promise((resolve) => {
+            const git = cp.spawn('git', args, { cwd: workspaceFolder.uri.fsPath });
+            let stdout = '';
+            git.stdout.on('data', data => stdout += data);
+            git.on('error', err => {
+                console.warn('Git commit diff failed to start:', err);
+                resolve("");
+            });
+            git.on('close', () => resolve(stdout));
+        });
+    }
+
+    async getBlame(filePath: string): Promise<Map<number, number>> {
+        const workspaceFolder = vscode.workspace.getWorkspaceFolder(vscode.Uri.file(filePath));
+        if (!workspaceFolder) return new Map();
+
+        const args = ['-c', 'color.ui=false', 'blame', '--line-porcelain', filePath];
+        
+        return new Promise((resolve) => {
+            const git = cp.spawn('git', args, { cwd: workspaceFolder.uri.fsPath });
+            let stdout = '';
+            let stderr = '';
+
+            git.stdout.on('data', data => stdout += data);
+            git.stderr.on('data', data => stderr += data);
+
+            git.on('error', err => {
+                console.warn('Git blame failed to start:', err);
+                resolve(new Map());
+            });
+
+            git.on('close', code => {
+                if (code !== 0) {
+                    resolve(new Map());
+                    return;
+                }
+                
+                const result = new Map<number, number>();
+                const lines = stdout.split('\n');
+                
+                for (let i = 0; i < lines.length; i++) {
+                    const line = lines[i];
+                    // porcelain format starts with: <hash> <origLine> <finalLine> <groupLines>
+                    if (line.match(/^[a-f0-9]{32,40} \d+ \d+ \d+/)) {
+                        const parts = line.split(' ');
+                        const finalLine = parseInt(parts[2]); // 1-based
+                        
+                        // Find author-time
+                        // It usually follows within the next few lines before the content line (starts with \t)
+                        let j = i + 1;
+                        while (j < lines.length && !lines[j].startsWith('\t')) {
+                            if (lines[j].startsWith('author-time ')) {
+                                const timestamp = parseInt(lines[j].substring(12));
+                                result.set(finalLine - 1, timestamp * 1000); // Convert to ms
+                            }
+                            j++;
+                        }
+                        i = j; // Skip to the content line
+                    }
+                }
+                resolve(result);
+            });
+        });
+    }
+
+    public async runGit(args: string[], cwd: string): Promise<{stdout: string, stderr: string}> {
+        return new Promise((resolve, reject) => {
+            cp.execFile('git', args, { cwd }, (error, stdout, stderr) => {
+                if (error && error.code !== 0 && error.code !== 1) { // git diff returns 1 for differences
+                    reject(error);
+                } else {
+                    resolve({ stdout, stderr });
+                }
+            });
+        });
+    }
+
     async getHistoryForSelection(filePath: string, startLine: number, endLine: number, config: GitHistoryConfig): Promise<GitCommit[]> {
         const workspaceFolder = vscode.workspace.getWorkspaceFolder(vscode.Uri.file(filePath));
         if (!workspaceFolder) {
@@ -28,6 +147,11 @@ export class GitService {
 
             git.stdout.on('data', data => stdout += data);
             git.stderr.on('data', data => stderr += data);
+
+            git.on('error', err => {
+                console.warn('Git log failed to start:', err);
+                resolve([]);
+            });
 
             git.on('close', code => {
                 if (code !== 0) {
@@ -53,6 +177,11 @@ export class GitService {
 
             git.stdout.on('data', data => stdout += data);
             git.stderr.on('data', data => stderr += data);
+
+            git.on('error', err => {
+                console.warn('Git diff failed to start:', err);
+                resolve('Error calculating diff.');
+            });
 
             git.on('close', code => {
                 // git diff --no-index returns 1 if differences are found, 0 if equal.

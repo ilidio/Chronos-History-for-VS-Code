@@ -31,3 +31,4 @@ tmp/
 # Misc
 .env
 .cache/
+.gemini.test.json

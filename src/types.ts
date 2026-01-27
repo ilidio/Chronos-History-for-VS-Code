@@ -9,6 +9,7 @@ export interface Snapshot {
     relevantRange?: { start: number; end: number };
     linesAdded?: number;
     linesDeleted?: number;
+    pinned?: boolean;
 }
 
 export interface HistoryEntry extends Snapshot {
@@ -26,6 +27,8 @@ export interface ChronosConfig {
     maxSizeMB: number;
     trackSelectionHistory: boolean;
     exclude: string[];
+    dailyBriefing?: boolean;
+    language?: string;
 }
 
 export interface GitHistoryConfig {

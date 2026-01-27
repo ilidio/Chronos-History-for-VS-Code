@@ -1,133 +1,124 @@
 const Module = require('module');
 const originalRequire = Module.prototype.require;
 const path = require('path');
-const { mockVscode, fsStore, commandsMap } = require('./mock_vscode');
-const { GoogleGenAI } = require("@google/genai");
+const { mockVscode, fsStore } = require('./mock_vscode');
 
-// CONFIGURATION
-const apiKey = "AIzaSyBBE38sDhriz8ZsP_0hAj84qDKNATnxi0M";
-const modelId = "gemini-3-flash-preview";
-
-// Mock modules
+// Mock vscode module
 Module.prototype.require = function(request) {
-    if (request === 'vscode') return mockVscode;
+    if (request === 'vscode') {
+        return mockVscode;
+    }
     return originalRequire.apply(this, arguments);
 };
 
+const { HistoryStorage } = require('../out/storage');
+
 async function runProTests() {
-    console.log('--- Starting Chronos Pro Features Tests ---');
+    console.log('\n--- Starting Chronos Pro Features Tests ---');
 
     try {
-        const { HistoryManager } = require('../out/historyManager');
-        const { HistoryStorage } = require('../out/storage');
-        const { AIService } = require('../out/ai/aiService');
-        const { GitService } = require('../out/git/gitService');
-
         const context = new mockVscode.ExtensionContext();
-        const storage = new HistoryStorage(context);
-        const gitService = new GitService();
-        const manager = new HistoryManager(context, storage, gitService);
-        const aiService = new AIService();
-
-        // --- Test 1: Magnitude Parsing ---
-        console.log('\n[Test 1] Magnitude Parsing');
-        const sampleDiff = `
---- a/test.ts
-+++ b/test.ts
-@@ -1,3 +1,5 @@
- line 1
--line 2
-+new line 2
-+line 3
-+line 4
-+line 5
--line 6
-        `.trim();
+        const rootUri = mockVscode.Uri.file('/globalStorage');
+        const indexUri = mockVscode.Uri.joinPath(rootUri, 'index.json');
         
-        // Magnitude logic is private, but I can call it via prototype for testing
-        const magnitude = manager.parseMagnitude(sampleDiff);
-        console.log('Parsed Magnitude:', magnitude);
-        if (magnitude.added === 4 && magnitude.deleted === 2) {
-            console.log('✅ Magnitude parsing successful.');
-        } else {
-            console.error('❌ Magnitude parsing failed. Expected +4 -2.');
-        }
-
-        // --- Test 2: Snapshot Clustering ---
-        console.log('\n[Test 2] Snapshot Clustering');
-        const now = Date.now();
-        const snapshots = [
-            { id: '1', timestamp: now, filePath: 'a.ts', eventType: 'save' },
-            { id: '2', timestamp: now - 1000, filePath: 'a.ts', eventType: 'save' },
-            { id: '3', timestamp: now - 2000, filePath: 'a.ts', eventType: 'save' },
-            { id: '4', timestamp: now - 600000, filePath: 'a.ts', eventType: 'save' } // 10 mins ago
-        ];
-        
-        const clustered = manager.clusterSnapshots(snapshots);
-        console.log('Clustered items count:', clustered.length);
-        if (clustered.length === 2 && clustered[0].type === 'cluster') {
-            console.log('✅ Snapshot clustering successful.');
-        } else {
-            console.error('❌ Snapshot clustering failed.');
-        }
-
-        // --- Test 3: AI Service Integration ---
-        console.log('\n[Test 3] AI Service Integration (Gemini)');
-        
-        // Mock VSCode config for AIService
-        const originalGetConfig = mockVscode.workspace.getConfiguration;
-        mockVscode.workspace.getConfiguration = (section) => {
-            if (section === 'chronos.ai') {
-                return {
-                    get: (key, def) => {
-                        if (key === 'apiKey') return apiKey;
-                        if (key === 'model') return modelId;
-                        return def;
-                    }
-                };
-            }
-            return originalGetConfig(section);
+        const saveIndex = async (data) => {
+            await mockVscode.workspace.fs.writeFile(indexUri, new TextEncoder().encode(JSON.stringify(data, null, 2)));
         };
 
-        // Re-init AI service with mock config
-        aiService.init();
+        // --- Test 1: Search Toggle (Metadata vs Content) ---
+        console.log('\n[Test 1] Search Toggle (Metadata vs Content)');
+        let storage = new HistoryStorage(context);
+        await storage.init();
+        
+        const snap1 = 'snap-meta';
+        const snap2 = 'snap-content';
+        
+        const indexData = {
+            snapshots: [
+                { id: snap1, timestamp: Date.now(), filePath: 'test.ts', eventType: 'save', label: 'Feature Alpha', storagePath: snap1 },
+                { id: snap2, timestamp: Date.now(), filePath: 'other.ts', eventType: 'save', label: 'Regular Save', storagePath: snap2 }
+            ]
+        };
 
-        if (!aiService.isEnabled('smartSummaries')) {
-            console.error('❌ AI Service not enabled with key.');
+        await saveIndex(indexData);
+        await mockVscode.workspace.fs.writeFile(mockVscode.Uri.joinPath(rootUri, snap1), new TextEncoder().encode('some code here'));
+        await mockVscode.workspace.fs.writeFile(mockVscode.Uri.joinPath(rootUri, snap2), new TextEncoder().encode('export function hidden() {}'));
+
+        const metaResults = await storage.search('Alpha', false);
+        if (metaResults.length === 1 && metaResults[0].id === snap1) {
+            console.log('✅ Metadata search found "Feature Alpha" label.');
         } else {
-            console.log('✨ AI Service enabled. Calling Gemini...');
-            
-            // 3a. Summarize
-            const summary = await aiService.summarizeDiff(sampleDiff);
-            console.log('AI Summary:', summary);
-            if (summary && summary.length > 0) console.log('✅ Summarize successful.');
-
-            // 3b. Explain
-            const explanation = await aiService.explainDiff(sampleDiff);
-            console.log('AI Explanation:', explanation);
-            if (explanation && explanation.length > 0) console.log('✅ Explanation successful.');
-
-            // 3c. Commit Message
-            const commitMsg = await aiService.generateCommitMessage(sampleDiff);
-            console.log('AI Commit Message:\n', commitMsg);
-            if (commitMsg && commitMsg.length > 0) console.log('✅ Commit Message successful.');
-
-            // 3d. Git Explain
-            const gitExplain = await aiService.explainDiff(sampleDiff);
-            console.log('AI Git Explain:', gitExplain);
-            if (gitExplain && gitExplain.length > 0) console.log('✅ Git Explain successful.');
+            console.error('❌ Metadata search failed.');
         }
 
-        // --- Test 4: Regression Check (Deleted File logic) ---
-        console.log('\n[Test 4] Regression Check: Deleted Files');
-        // Ensure getDeletedFiles still returns something
-        const deleted = await manager.getDeletedFiles();
-        console.log('Deleted files found:', deleted.length);
-        console.log('✅ Regression check passed (method exists and returns).');
+        const metaFail = await storage.search('hidden', false);
+        if (metaFail.length === 0) {
+            console.log('✅ Metadata search correctly skipped content string "hidden".');
+        } else {
+            console.error('❌ Metadata search incorrectly found content string.');
+        }
+
+        const deepSuccess = await storage.search('hidden', true);
+        if (deepSuccess.length === 1 && deepSuccess[0].id === snap2) {
+            console.log('✅ Deep search found "hidden" inside file content.');
+        } else {
+            console.error('❌ Deep search failed to find content string.');
+        }
+
+
+        // --- Test 2: Pinning & Pruning ---
+        console.log('\n[Test 2] Pinning & Pruning');
+        storage = new HistoryStorage(context);
+        await storage.init();
+        
+        const oldSnapId = 'old-snap';
+        const pinnedSnapId = 'pinned-snap';
+        const now = Date.now();
+        const thirtyOneDaysAgo = now - (31 * 24 * 60 * 60 * 1000);
+
+        const pruneIndexData = {
+            snapshots: [
+                { id: oldSnapId, timestamp: thirtyOneDaysAgo, filePath: 'old.ts', eventType: 'save', storagePath: oldSnapId },
+                { id: pinnedSnapId, timestamp: thirtyOneDaysAgo, filePath: 'critical.ts', eventType: 'save', storagePath: pinnedSnapId, pinned: true }
+            ]
+        };
+
+        await saveIndex(pruneIndexData);
+        await mockVscode.workspace.fs.writeFile(mockVscode.Uri.joinPath(rootUri, oldSnapId), new TextEncoder().encode('old'));
+        await mockVscode.workspace.fs.writeFile(mockVscode.Uri.joinPath(rootUri, pinnedSnapId), new TextEncoder().encode('pinned'));
+
+        console.log('Running pruning (30 days limit)...');
+        await storage.prune(30);
+
+        storage = new HistoryStorage(context);
+        await storage.init();
+        const finalHistory = await storage.getProjectHistory();
+
+        const hasOld = finalHistory.some(s => s.id === oldSnapId);
+        const hasPinned = finalHistory.some(s => s.id === pinnedSnapId);
+
+        if (!hasOld && hasPinned) {
+            console.log('✅ Pruning successfully removed old snapshot but KEPT pinned snapshot.');
+        } else {
+            console.error('❌ Pruning logic failed. Old exists:', hasOld, 'Pinned exists:', hasPinned);
+        }
+
+        // --- Test 3: Toggle Pin API ---
+        console.log('\n[Test 3] Toggle Pin API');
+        const targetSnap = finalHistory.find(s => s.id === pinnedSnapId);
+        const initialState = targetSnap.pinned || false;
+        const newState = await storage.togglePin(pinnedSnapId);
+        
+        if (newState === !initialState) {
+            console.log('✅ togglePin correctly flipped the state.');
+        } else {
+            console.error('❌ togglePin failed.');
+        }
 
     } catch (e) {
-        console.error('Pro Feature Test Suite Failed:', e);
+        console.error('Pro Features Test Failed:', e);
         console.error(e.stack);
+        process.exit(1);
     }
 }
 

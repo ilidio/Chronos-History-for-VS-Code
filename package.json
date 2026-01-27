@@ -92,6 +92,16 @@
           "default": true,
           "description": "Generate AI insights/summaries when stopping an experiment."
         },
+        "chronos.ai.dailyBriefing": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show a summary of your previous session's progress when starting VS Code."
+        },
+        "chronos.ai.language": {
+          "type": "string",
+          "default": "English",
+          "description": "The language in which AI should generate summaries and briefings (e.g., English, Spanish, Portuguese)."
+        },
         "chronos.exclude": {
           "type": "array",
           "items": {
@@ -149,9 +159,21 @@
         "icon": "$(git-branch)"
       },
       {
+        "command": "chronos.toggleHeatmap",
+        "title": "Toggle Code Heatmap",
+        "category": "Chronos",
+        "icon": "$(flame)"
+      },
+      {
         "command": "chronos.showRecentChanges",
         "title": "Show Recent Changes",
         "category": "Chronos"
+      },
+      {
+        "command": "chronos.showBriefingForDate",
+        "title": "Show Briefing for Date...",
+        "category": "Chronos",
+        "icon": "$(calendar)"
       },
       {
         "command": "chronos.putLabel",
@@ -177,6 +199,11 @@
       {
         "command": "chronos.compareToCurrent",
         "title": "Compare with Current",
+        "category": "Chronos"
+      },
+      {
+        "command": "chronos.compareWithActive",
+        "title": "Compare with Active Editor",
         "category": "Chronos"
       },
       {
@@ -209,8 +236,19 @@
         "icon": "$(sparkle)"
       },
       {
+        "command": "chronos.generateChangelog",
+        "title": "Generate Changelog (AI)...",
+        "category": "Chronos",
+        "icon": "$(list-unordered)"
+      },
+      {
         "command": "chronos.showLogs",
         "title": "Show Chronos Logs",
+        "category": "Chronos"
+      },
+      {
+        "command": "chronos.runDiagnostics",
+        "title": "Run Diagnostics",
         "category": "Chronos"
       },
       {
@@ -241,7 +279,7 @@
         {
           "id": "chronos-sidebar",
           "title": "Chronos",
-          "icon": "resources/icon.svg"
+          "icon": "resources/black-hole.svg"
         }
       ]
     },
@@ -306,12 +344,16 @@
           "group": "3_global@2"
         },
         {
-          "command": "chronos.putLabel",
+          "command": "chronos.toggleHeatmap",
           "group": "3_global@3"
         },
         {
+          "command": "chronos.putLabel",
+          "group": "3_global@4"
+        },
+        {
           "command": "chronos.generateCommitMessage",
-          "group": "3_global@4",
+          "group": "3_global@5",
           "when": "config.chronos.ai.apiKey"
         }
       ]

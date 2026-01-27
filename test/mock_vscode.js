@@ -55,6 +55,7 @@ const mockVscode = {
         fire(data) { this.emit('event', data); }
     },
     StatusBarAlignment: { Left: 1, Right: 2 },
+    OverviewRulerLane: { Left: 1, Center: 2, Right: 4, Full: 7 },
     window: {
         createStatusBarItem: () => ({ show: () => {}, hide: () => {}, text: '', command: '' }),
         createOutputChannel: (name) => ({
@@ -67,6 +68,8 @@ const mockVscode = {
         showInputBox: async (opts) => { console.log('InputBox:', opts.prompt); return 'MockInput'; },
         registerTreeDataProvider: () => {},
         setStatusBarMessage: () => {},
+        createTextEditorDecorationType: () => ({ dispose: () => {} }),
+        onDidChangeActiveTextEditor: () => ({ dispose: () => {} }),
         createWebviewPanel: (viewType, title, column, options) => {
             console.log(`createWebviewPanel: ${title}`);
             return {

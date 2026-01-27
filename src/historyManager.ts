@@ -41,7 +41,8 @@ export class HistoryManager {
             maxDays: config.get<number>('maxDays', 30),
             maxSizeMB: config.get<number>('maxSizeMB', 500),
             trackSelectionHistory: config.get<boolean>('trackSelectionHistory', true),
-            exclude: config.get<string[]>('exclude', [])
+            exclude: config.get<string[]>('exclude', []),
+            dailyBriefing: config.get<boolean>('ai.dailyBriefing', true)
         };
     }
 
@@ -55,7 +56,123 @@ export class HistoryManager {
 
         setTimeout(() => {
             vscode.workspace.textDocuments.forEach(doc => this.onOpen(doc));
+            // Maintenance
+            this.storage.prune(this.config.maxDays).catch(err => console.error('Pruning failed:', err));
         }, 1000);
+    }
+    
+    public async togglePin(snapshotId: string): Promise<boolean> {
+        return await this.storage.togglePin(snapshotId);
+    }
+
+    public async showDailyBriefing() {
+        if (!this.aiService.isEnabled('smartSummaries')) return;
+
+        const history = await this.storage.getProjectHistory();
+        if (history.length === 0) return;
+
+        const lastSnapshotTime = history[0].timestamp;
+        const oneDay = 24 * 60 * 60 * 1000;
+        const sessionSnapshots = history.filter(s => s.timestamp > (lastSnapshotTime - oneDay) && s.eventType === 'save');
+
+        await this.generateBriefingForSnapshots(sessionSnapshots, `State at ${new Date(lastSnapshotTime).toLocaleDateString()}`);
+    }
+
+    public async showDailyBriefingForDate() {
+        const history = await this.storage.getProjectHistory();
+        if (history.length === 0) return;
+
+        // Group snapshots by date
+        const groups = new Map<string, Snapshot[]>();
+        for (const s of history) {
+            const dateStr = new Date(s.timestamp).toLocaleDateString();
+            if (!groups.has(dateStr)) groups.set(dateStr, []);
+            groups.get(dateStr)!.push(s);
+        }
+
+        const items = Array.from(groups.keys()).map(date => ({
+            label: date,
+            description: `${groups.get(date)!.length} snapshots`
+        }));
+
+        const selected = await vscode.window.showQuickPick(items, {
+            placeHolder: 'Select a date to generate a briefing for'
+        });
+
+        if (selected) {
+            const daySnapshots = groups.get(selected.label)!;
+            await this.generateBriefingForSnapshots(daySnapshots, selected.label);
+        }
+    }
+
+    private async generateBriefingForSnapshots(snapshots: Snapshot[], title: string) {
+        if (snapshots.length < 1) return;
+
+        const summaryData = snapshots.slice(0, 20).map(s => `- ${s.filePath}: ${s.label || 'Modified'}`).join('\n');
+        
+        const briefing = await this.aiService.generateDailyBriefing(summaryData);
+        if (briefing) {
+            const channel = vscode.window.createOutputChannel(`Chronos Brief: ${title}`);
+            channel.appendLine(`📅 Chronos Progress Briefing - ${title}`);
+            channel.appendLine("==================================");
+            channel.appendLine("");
+            channel.appendLine(briefing);
+            channel.show(true);
+        }
+    }
+
+    public async generateChangelog() {
+        const history = await this.storage.getProjectHistory();
+        if (history.length === 0) return;
+
+        const presets = [
+            { label: 'Last 24 Hours', value: 24 * 60 * 60 * 1000 },
+            { label: 'Last 7 Days', value: 7 * 24 * 60 * 60 * 1000 },
+            { label: 'Last 30 Days', value: 30 * 24 * 60 * 60 * 1000 },
+            { label: 'Custom Range...', value: -1 }
+        ];
+
+        const selected = await vscode.window.showQuickPick(presets, { placeHolder: 'Select time range for Changelog' });
+        if (!selected) return;
+
+        let startTime = Date.now() - selected.value;
+        let endTime = Date.now();
+
+        if (selected.value === -1) {
+            const snapshots = history.map(s => ({
+                label: new Date(s.timestamp).toLocaleString(),
+                description: s.label || s.filePath,
+                timestamp: s.timestamp
+            }));
+
+            const start = await vscode.window.showQuickPick(snapshots, { title: 'Select START point' });
+            if (!start) return;
+            const end = await vscode.window.showQuickPick(snapshots, { title: 'Select END point' });
+            if (!end) return;
+
+            startTime = Math.min(start.timestamp, end.timestamp);
+            endTime = Math.max(start.timestamp, end.timestamp);
+        }
+
+        const filtered = history.filter(s => s.timestamp >= startTime && s.timestamp <= endTime && s.eventType === 'save');
+        if (filtered.length === 0) {
+            vscode.window.showInformationMessage('No changes found in the selected range.');
+            return;
+        }
+
+        await vscode.window.withProgress({
+            location: vscode.ProgressLocation.Notification,
+            title: "Generating Changelog Draft...",
+            cancellable: false
+        }, async () => {
+            const activityData = filtered.slice(0, 50).map(s => `- ${s.filePath}: ${s.label || 'Modified'}`).join('\n');
+            const changelog = await this.aiService.generateChangelog(activityData);
+            
+            if (changelog) {
+                const doc = await vscode.workspace.openTextDocument({ content: changelog, language: 'markdown' });
+                await vscode.window.showTextDocument(doc);
+            }
+        });
     }
     
     public async startExperiment(name: string) {
@@ -83,8 +200,12 @@ export class HistoryManager {
         if (this.aiService.isEnabled('experimentPostMortem')) {
             try {
                 let fileUri: vscode.Uri | undefined;
-                if (vscode.workspace.workspaceFolders) {
-                    fileUri = vscode.Uri.joinPath(vscode.workspace.workspaceFolders[0].uri, this.activeExperiment.filePath);
+                if (this.activeExperiment.filePath) {
+                    if (path.isAbsolute(this.activeExperiment.filePath)) {
+                        fileUri = vscode.Uri.file(this.activeExperiment.filePath);
+                    } else if (vscode.workspace.workspaceFolders) {
+                        fileUri = vscode.Uri.joinPath(vscode.workspace.workspaceFolders[0].uri, this.activeExperiment.filePath);
+                    }
                 }
                 
                 if (fileUri) {

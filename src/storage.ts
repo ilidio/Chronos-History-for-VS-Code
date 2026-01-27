@@ -5,12 +5,23 @@ import { Snapshot, HistoryIndex, ChronosConfig } from './types';
 
 export class HistoryStorage {
     private globalStorageRoot: vscode.Uri;
-    private indices: Map<string, HistoryIndex> = new Map();
+    private indices: Map<string, { index: HistoryIndex, root: vscode.Uri }> = new Map();
     private initialized = false;
     private saveQueue: Promise<void> = Promise.resolve();
 
-    constructor(private context: vscode.ExtensionContext) {
+    constructor(private context: vscode.ExtensionContext, private outputChannel?: vscode.OutputChannel) {
         this.globalStorageRoot = context.storageUri || context.globalStorageUri;
+    }
+
+    private log(msg: string) {
+        if (this.outputChannel) {
+            this.outputChannel.appendLine(`[Storage] ${msg}`);
+        }
+    }
+
+    private normalizePath(p: string): string {
+        if (!p) return '';
+        return p.replace(/\\/g, '/').replace(/^\.\//, '').replace(/^\//, '').toLowerCase();
     }
 
     async init(): Promise<void> {
@@ -19,13 +30,13 @@ export class HistoryStorage {
         try {
             await vscode.workspace.fs.createDirectory(this.globalStorageRoot);
             this.initialized = true;
-            console.log('[HistoryStorage] Initialized');
+            this.log('Initialized');
         } catch (e) {
-            console.error('[HistoryStorage] Global init failed:', e);
+            this.log(`Global init failed: ${e}`);
         }
     }
 
-        async getWorkspaceStorageRoot(): Promise<vscode.Uri> {
+    async getWorkspaceStorageRoot(): Promise<vscode.Uri> {
         await this.init();
         if (vscode.workspace.workspaceFolders && vscode.workspace.workspaceFolders.length > 0) {
             const { root } = await this.getStorageForFile(vscode.workspace.workspaceFolders[0].uri);
@@ -35,8 +46,8 @@ export class HistoryStorage {
     }
 
     private async getStorageForFile(fileUri: vscode.Uri): Promise<{ root: vscode.Uri, indexUri: vscode.Uri }> {
-            const config = vscode.workspace.getConfiguration('chronos');
-            const saveInProject = config.get<boolean>('saveInProjectFolder', false);        
+        const config = vscode.workspace.getConfiguration('chronos');
+        const saveInProject = config.get<boolean>('saveInProjectFolder', false);        
         let root = this.globalStorageRoot;
         const workspaceFolder = vscode.workspace.getWorkspaceFolder(fileUri);
         
@@ -50,19 +61,22 @@ export class HistoryStorage {
         };
     }
 
-    private async loadIndex(indexUri: vscode.Uri): Promise<HistoryIndex> {
+    private async loadIndex(indexUri: vscode.Uri, forceReload: boolean = false): Promise<HistoryIndex> {
         const key = indexUri.toString();
-        if (this.indices.has(key)) return this.indices.get(key)!;
+        if (!forceReload && this.indices.has(key)) return this.indices.get(key)!.index;
 
+        const root = vscode.Uri.joinPath(indexUri, '..');
         try {
             const data = await vscode.workspace.fs.readFile(indexUri);
             const decoded = new TextDecoder().decode(data);
             const index = JSON.parse(decoded);
-            this.indices.set(key, index);
+            this.indices.set(key, { index, root });
+            this.log(`Loaded index: ${key} (${index.snapshots.length} snapshots)`);
             return index;
         } catch (e) {
-            const newIndex = { snapshots: [] };
-            this.indices.set(key, newIndex);
+            // Only set empty if it doesn't exist, don't cache permanent failures
+            const newIndex: HistoryIndex = { snapshots: [] };
+            this.indices.set(key, { index: newIndex, root });
             return newIndex;
         }
     }
@@ -80,12 +94,12 @@ export class HistoryStorage {
         const { root, indexUri } = await this.getStorageForFile(document.uri);
         const index = await this.loadIndex(indexUri);
         const relativePath = vscode.workspace.asRelativePath(document.uri, false);
+        const normalizedRelPath = this.normalizePath(relativePath);
 
         const currentContent = document.getText();
 
-        // Optimization: Don't save if content is identical to last snapshot
         const lastSnapshot = [...index.snapshots]
-            .filter(s => s.filePath === relativePath)
+            .filter(s => this.normalizePath(s.filePath) === normalizedRelPath)
             .sort((a, b) => b.timestamp - a.timestamp)[0];
 
         if (eventType !== 'label' && lastSnapshot && lastSnapshot.storagePath) {
@@ -95,12 +109,10 @@ export class HistoryStorage {
                 const lastContent = new TextDecoder().decode(lastData);
                 
                 if (lastContent === currentContent) {
-                    console.log('[HistoryStorage] Content identical to last snapshot, skipping save.');
+                    this.log(`Content identical for ${normalizedRelPath}, skipping.`);
                     return null;
                 }
-            } catch (e) {
-                // If we can't read last snapshot, proceed with saving new one
-            }
+            } catch (e) {}
         }
 
         const id = uuidv4();
@@ -111,7 +123,7 @@ export class HistoryStorage {
             const content = new TextEncoder().encode(currentContent);
             await vscode.workspace.fs.writeFile(blobUri, content);
         } catch (e) {
-            console.error('[HistoryStorage] Save failed:', e);
+            this.log(`Save failed: ${e}`);
             return null;
         }
 
@@ -129,42 +141,85 @@ export class HistoryStorage {
 
         index.snapshots.push(snapshot);
         await this.saveIndex(index, indexUri);
+        this.log(`Saved snapshot ${id} for ${relativePath}`);
         
         return snapshot;
     }
 
     async getHistoryForFile(fileUri: vscode.Uri): Promise<Snapshot[]> {
         await this.init();
+        await this.refreshIndices(true); // Force reload to see changes from other instances
         
-        const { indexUri } = await this.getStorageForFile(fileUri);
-        const index = await this.loadIndex(indexUri);
-        const relativePath = vscode.workspace.asRelativePath(fileUri, false);
+        const rawRelPath = vscode.workspace.asRelativePath(fileUri, false);
+        const normalizedRelPath = this.normalizePath(rawRelPath);
+        this.log(`getHistoryForFile searching for: ${rawRelPath} (normalized: ${normalizedRelPath})`);
+        
+        let results: Snapshot[] = [];
 
-        return index.snapshots
-            .filter(s => s.filePath === relativePath || s.eventType === 'label')
-            .sort((a, b) => b.timestamp - a.timestamp);
+        for (const [key, { index }] of this.indices.entries()) {
+            const matches = index.snapshots.filter(s => {
+                const sPath = this.normalizePath(s.filePath);
+                const match = sPath === normalizedRelPath || 
+                             (sPath.endsWith('/' + normalizedRelPath)) || 
+                             (normalizedRelPath.endsWith('/' + sPath)) ||
+                             (s.eventType === 'label' && sPath === '');
+                if (match) this.log(`Match found in index ${key}: ${s.filePath} (id: ${s.id})`);
+                return match;
+            });
+            results = results.concat(matches);
+        }
+
+        this.log(`Total history entries found: ${results.length}`);
+        return results.sort((a, b) => b.timestamp - a.timestamp);
     }
 
-    private async refreshIndices(): Promise<void> {
-        // Always ensure global index is loaded
+    private async refreshIndices(force: boolean = false): Promise<void> {
         const globalIndexUri = vscode.Uri.joinPath(this.globalStorageRoot, 'index.json');
-        await this.loadIndex(globalIndexUri);
+        await this.loadIndex(globalIndexUri, force);
 
-        // If enabled, check all workspace folders for local indices
-        const config = vscode.workspace.getConfiguration('chronos');
-        const saveInProject = config.get<boolean>('saveInProjectFolder', false);
-        
-        if (saveInProject && vscode.workspace.workspaceFolders) {
+        if (vscode.workspace.workspaceFolders) {
             for (const folder of vscode.workspace.workspaceFolders) {
                 const localIndexUri = vscode.Uri.joinPath(folder.uri, '.history', 'index.json');
                 try {
                     await vscode.workspace.fs.stat(localIndexUri);
-                    await this.loadIndex(localIndexUri);
+                    await this.loadIndex(localIndexUri, force);
                 } catch {
-                    // Index doesn't exist in this folder, skip
+                    // Skip
                 }
             }
         }
+    }
+
+    public async runDiagnostics(): Promise<string> {
+        await this.init();
+        await this.refreshIndices(true);
+        let out = `Chronos Storage Diagnostics\n`;
+        out += `============================\n`;
+        out += `Global Storage Root: ${this.globalStorageRoot.toString()}\n`;
+        out += `Loaded Indices: ${this.indices.size}\n\n`;
+
+        const activeEditor = vscode.window.activeTextEditor;
+        if (activeEditor) {
+            const uri = activeEditor.document.uri;
+            const rawRel = vscode.workspace.asRelativePath(uri, false);
+            out += `Active File: ${uri.fsPath}\n`;
+            out += `Raw Relative Path: ${rawRel}\n`;
+            out += `Normalized Path: ${this.normalizePath(rawRel)}\n\n`;
+        } else {
+            out += `No active editor found.\n\n`;
+        }
+
+        for (const [key, { index, root }] of this.indices.entries()) {
+            out += `Index: ${key}\n`;
+            out += `Root: ${root.toString()}\n`;
+            out += `Snapshots: ${index.snapshots.length}\n`;
+            if (index.snapshots.length > 0) {
+                const last = index.snapshots[index.snapshots.length - 1];
+                out += `Last Snapshot: ${last.filePath} (Normalized: ${this.normalizePath(last.filePath)}) at ${new Date(last.timestamp).toLocaleString()}\n`;
+            }
+            out += `----------------------------\n`;
+        }
+        return out;
     }
 
     async getProjectHistory(): Promise<Snapshot[]> {
@@ -172,13 +227,22 @@ export class HistoryStorage {
         await this.refreshIndices();
         
         let all: Snapshot[] = [];
-        for (const index of this.indices.values()) {
+        for (const { index } of this.indices.values()) {
             all = all.concat(index.snapshots);
         }
         return all.sort((a, b) => b.timestamp - a.timestamp);
     }
 
     async getSnapshotUri(snapshot: Snapshot, fileUri: vscode.Uri): Promise<vscode.Uri> {
+        await this.init();
+        await this.refreshIndices();
+
+        for (const { index, root } of this.indices.values()) {
+            if (index.snapshots.some(s => s.id === snapshot.id)) {
+                return vscode.Uri.joinPath(root, snapshot.storagePath!);
+            }
+        }
+
         const { root } = await this.getStorageForFile(fileUri);
         return vscode.Uri.joinPath(root, snapshot.storagePath!);
     }
@@ -189,7 +253,7 @@ export class HistoryStorage {
                 const data = new TextEncoder().encode(JSON.stringify(index, null, 2));
                 await vscode.workspace.fs.writeFile(indexUri, data);
             } catch (e) {
-                console.error('[HistoryStorage] Index save failed:', e);
+                this.log(`Index save failed: ${e}`);
             }
         });
         return this.saveQueue;
@@ -219,65 +283,89 @@ export class HistoryStorage {
         await this.saveIndex(index, indexUri);
     }
 
-    async search(query: string): Promise<Snapshot[]> {
+    async togglePin(snapshotId: string): Promise<boolean> {
+        await this.init();
+        await this.refreshIndices();
+
+        for (const [key, { index }] of this.indices) {
+            const snapshot = index.snapshots.find(s => s.id === snapshotId);
+            if (snapshot) {
+                snapshot.pinned = !snapshot.pinned;
+                const indexUri = vscode.Uri.parse(key);
+                await this.saveIndex(index, indexUri);
+                return snapshot.pinned;
+            }
+        }
+        return false;
+    }
+
+    async prune(maxDays: number): Promise<void> {
+        if (maxDays <= 0) return;
+        await this.init();
+        await this.refreshIndices();
+
+        const cutoff = Date.now() - (maxDays * 24 * 60 * 60 * 1000);
+
+        for (const [key, { index, root }] of this.indices) {
+            const originalCount = index.snapshots.length;
+            const toKeep: Snapshot[] = [];
+            const toDelete: Snapshot[] = [];
+
+            for (const s of index.snapshots) {
+                if (s.pinned || s.timestamp > cutoff) {
+                    toKeep.push(s);
+                } else {
+                    toDelete.push(s);
+                }
+            }
+
+            if (toKeep.length !== originalCount) {
+                for (const s of toDelete) {
+                    if (s.storagePath) {
+                        try {
+                            const blobUri = vscode.Uri.joinPath(root, s.storagePath);
+                            await vscode.workspace.fs.delete(blobUri, { recursive: false, useTrash: false });
+                        } catch (e) {}
+                    }
+                }
+
+                index.snapshots = toKeep;
+                const indexUri = vscode.Uri.parse(key);
+                await this.saveIndex(index, indexUri);
+            }
+        }
+    }
+
+    async search(query: string, searchContent: boolean = false): Promise<Snapshot[]> {
         await this.init();
         await this.refreshIndices();
         
-        const allSnapshots = await this.getProjectHistory();
         const results: Snapshot[] = [];
-        
-        // Limit concurrency and total results
         const limit = 50;
+        const lowerQuery = query.toLowerCase();
         
-        for (const snapshot of allSnapshots) {
+        for (const { index, root } of this.indices.values()) {
             if (results.length >= limit) break;
-            if (!snapshot.storagePath) continue;
-            
-            try {
-                // Determine root for this snapshot
-                let root = this.globalStorageRoot;
-                // If we knew which workspace folder this came from, we'd use it.
-                // But getProjectHistory merges all indices.
-                // We need to find where the snapshot is stored. 
-                // Currently indices are mapped by key (indexUri).
-                // But the snapshot object doesn't know its source index.
-                // We might need to try both global and local if we don't know.
-                
-                // Improvement: storage logic needs to know where to look.
-                // For now, let's assume we can resolve it.
-                // Actually, getSnapshotUri takes a fileUri. We don't have fileUri here easily.
-                
-                // Workaround: We iterate known indices to find where this snapshot belongs?
-                // Or simply try to resolve it.
-                
-                // Let's refactor slightly: getProjectHistory could return { snapshot, rootUri }?
-                // Or we iterate indices here directly.
-            } catch (e) {}
-        }
-
-        // Re-implementing loop to handle storage roots correctly
-        for (const [key, index] of this.indices) {
-            if (results.length >= limit) break;
-            
-            // key is indexUri string. Root is parent of indexUri.
-            const indexUri = vscode.Uri.parse(key);
-            const root = vscode.Uri.joinPath(indexUri, '..');
             
             for (const snapshot of index.snapshots) {
                 if (results.length >= limit) break;
-                if (!snapshot.storagePath) continue;
+                
+                let match = false;
+                if (snapshot.label?.toLowerCase().includes(lowerQuery)) match = true;
+                else if (snapshot.description?.toLowerCase().includes(lowerQuery)) match = true;
+                else if (snapshot.filePath.toLowerCase().includes(lowerQuery)) match = true;
+                else if (snapshot.eventType.toLowerCase().includes(lowerQuery)) match = true;
 
-                try {
-                    const blobUri = vscode.Uri.joinPath(root, snapshot.storagePath);
-                    const data = await vscode.workspace.fs.readFile(blobUri);
-                    const content = new TextDecoder().decode(data);
-                    
-                    if (content.toLowerCase().includes(query.toLowerCase())) {
-                        results.push(snapshot);
-                    }
-                } catch (e) {
-                    // ignore read errors
+                if (!match && searchContent && snapshot.storagePath) {
+                    try {
+                        const blobUri = vscode.Uri.joinPath(root, snapshot.storagePath);
+                        const data = await vscode.workspace.fs.readFile(blobUri);
+                        const content = new TextDecoder().decode(data);
+                        if (content.toLowerCase().includes(lowerQuery)) match = true;
+                    } catch (e) {}
                 }
+
+                if (match) results.push(snapshot);
             }
         }
         

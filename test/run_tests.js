@@ -59,7 +59,7 @@ async function runTests() {
         // Also exist the file in workspace so it's not "deleted"
         await mockVscode.workspace.fs.writeFile(mockVscode.Uri.file('/workspace/secret.ts'), new TextEncoder().encode('current content'));
 
-        const searchResults = await storage.search('hidden logic');
+        const searchResults = await storage.search('hidden logic', true);
         if (searchResults.length === 1 && searchResults[0].id === snapshotId) {
             console.log('✅ Search found the correct snapshot.');
         } else {
