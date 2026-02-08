@@ -6,6 +6,7 @@ import { HistoryStorage } from './storage';
 import { HistoryManager } from './historyManager';
 import { HistoryFilter } from './historyFilter';
 import { HistoryViewProvider } from './views/historyWebview';
+import { HistoryPanelProvider } from './views/historyPanelProvider';
 import { GraphViewProvider } from './views/graphWebview';
 import { DeletedFilesProvider, DeletedFileItem } from './views/deletedFilesProvider';
 import { ActivityProvider } from './views/activityProvider';
@@ -21,6 +22,7 @@ let storage: HistoryStorage;
 let manager: HistoryManager;
 let historyFilter: HistoryFilter;
 let viewProvider: HistoryViewProvider;
+let panelProvider: HistoryPanelProvider;
 let graphViewProvider: GraphViewProvider;
 let deletedFilesProvider: DeletedFilesProvider;
 let activityProvider: ActivityProvider;
@@ -40,6 +42,7 @@ export function activate(context: vscode.ExtensionContext) {
 
         storage = new HistoryStorage(context, outputChannel);
         viewProvider = new HistoryViewProvider(context.extensionUri, outputChannel);
+        panelProvider = new HistoryPanelProvider(context.extensionUri);
         graphViewProvider = new GraphViewProvider(context.extensionUri, outputChannel);
         gitService = new GitService();
         aiService = new AIService();
@@ -56,6 +59,7 @@ export function activate(context: vscode.ExtensionContext) {
 
         vscode.window.registerTreeDataProvider('chronos.deletedFiles', deletedFilesProvider);
         vscode.window.registerTreeDataProvider('chronos.activity', activityProvider);
+        vscode.window.registerWebviewViewProvider('chronos.historyPanel', panelProvider);
 
         context.subscriptions.push(
             heatmapController,
@@ -75,6 +79,7 @@ export function activate(context: vscode.ExtensionContext) {
             vscode.commands.registerCommand('chronos.compareTwoSnapshots', compareTwoSnapshots),
             vscode.commands.registerCommand('chronos.compareTwoCommits', compareTwoCommits),
             vscode.commands.registerCommand('chronos.compareWithActive', compareWithActive),
+            vscode.commands.registerCommand('chronos.showGitHistory', showGitHistory),
             vscode.commands.registerCommand('chronos.gitHistoryForSelection', gitHistoryForSelection),
             vscode.commands.registerCommand('chronos.restoreDeletedFile', restoreDeletedFile),
             vscode.commands.registerCommand('chronos.previewDeletedFile', previewDeletedFile),
@@ -174,7 +179,7 @@ async function openDiff(snapshot: Snapshot, baseFilePath: string, currentSelecti
          try {
             const snapshotUri = await storage.getSnapshotUri(snapshot, fileUri);
             const title = `${fileName} (${timestamp}) ↔ ${fileName} (Current)`;
-            await vscode.commands.executeCommand('vscode.diff', snapshotUri, fileUri, title);
+            await vscode.commands.executeCommand('vscode.diff', snapshotUri, fileUri, title, { viewColumn: vscode.ViewColumn.Beside, preview: true });
         } catch (e) {}
         return;
     }
@@ -201,7 +206,7 @@ async function openDiff(snapshot: Snapshot, baseFilePath: string, currentSelecti
         const currTemp = await createTempFile(`current_selection${ext}`, currLines);
         
         const title = `${fileName} (${timestamp}) ↔ ${fileName} (Current)`;
-        await vscode.commands.executeCommand('vscode.diff', snapTemp, currTemp, title);
+        await vscode.commands.executeCommand('vscode.diff', snapTemp, currTemp, title, { viewColumn: vscode.ViewColumn.Beside, preview: true });
     } catch (e) {}
 }
 
@@ -226,11 +231,11 @@ async function openDiffGit(commit: GitCommit, filePath: string) {
         const rightTemp = await createTempFile(`git_${commit.hash.substring(0,7)}_after${ext}`, rightContent);
         
         const title = `${fileName} (Parent) ↔ ${fileName} (${commit.hash.substring(0, 7)})`;
-        await vscode.commands.executeCommand('vscode.diff', leftTemp, rightTemp, title);
+        await vscode.commands.executeCommand('vscode.diff', leftTemp, rightTemp, title, { viewColumn: vscode.ViewColumn.Beside, preview: true });
     } catch (e) {}
 }
 
-async function openDiffGitCurrent(commit: GitCommit, filePath: string, selection: {startLine: number, endLine: number}) {
+async function openDiffGitCurrent(commit: GitCommit, filePath: string, selection?: {startLine: number, endLine: number}) {
     if (!commit) return;
     const ext = path.extname(filePath) || '.txt';
     const fileName = path.basename(filePath);
@@ -246,15 +251,20 @@ async function openDiffGitCurrent(commit: GitCommit, filePath: string, selection
         // 2. Get current content
         const currentContent = fs.readFileSync(filePath, 'utf8');
 
-        // 3. Slice to selection
-        const histLines = historicalContent.split('\n').slice(selection.startLine, selection.endLine + 1).join('\n');
-        const currLines = currentContent.split('\n').slice(selection.startLine, selection.endLine + 1).join('\n');
+        // 3. Slice to selection if available
+        let histLines = historicalContent;
+        let currLines = currentContent;
 
-        const leftTemp = await createTempFile(`git_${commit.hash.substring(0,7)}_selection${ext}`, histLines);
-        const rightTemp = await createTempFile(`current_selection${ext}`, currLines);
+        if (selection) {
+            histLines = historicalContent.split('\n').slice(selection.startLine, selection.endLine + 1).join('\n');
+            currLines = currentContent.split('\n').slice(selection.startLine, selection.endLine + 1).join('\n');
+        }
+
+        const leftTemp = await createTempFile(`git_${commit.hash.substring(0,7)}${selection ? '_selection' : ''}${ext}`, histLines);
+        const rightTemp = await createTempFile(`current${selection ? '_selection' : ''}${ext}`, currLines);
         
         const title = `${fileName} (${commit.hash.substring(0, 7)}) ↔ ${fileName} (Current)`;
-        await vscode.commands.executeCommand('vscode.diff', leftTemp, rightTemp, title);
+        await vscode.commands.executeCommand('vscode.diff', leftTemp, rightTemp, title, { viewColumn: vscode.ViewColumn.Beside, preview: true });
     } catch (e) {
         vscode.window.showErrorMessage('Failed to open diff with current: ' + e);
     }
@@ -365,7 +375,13 @@ async function showHistory(uri?: vscode.Uri, selection?: vscode.Range) {
     if (!uri) return;
     const history = await storage.getHistoryForFile(uri);
     const clustered = manager.clusterSnapshots(history);
-    viewProvider.show(clustered, uri, (s: Snapshot) => getDiffForSnapshot(s, uri), selection, (q: string, sc: boolean) => storage.search(q, sc), (s: Snapshot) => explainSnapshot(s, uri), (q: string) => manager.semanticSearch(q), (id: string) => manager.togglePin(id), (s1: Snapshot, s2: Snapshot) => compareSnapshots(s1, s2));
+
+    if (vscode.workspace.getConfiguration('chronos').get('viewMode') === 'panel') {
+        panelProvider.showLocalHistory(clustered, uri.fsPath, selection);
+        vscode.commands.executeCommand('chronos.historyPanel.focus');
+    } else {
+        viewProvider.show(clustered, uri, (s: Snapshot) => getDiffForSnapshot(s, uri), selection, (q: string, sc: boolean) => storage.search(q, sc), (s: Snapshot) => explainSnapshot(s, uri), (q: string) => manager.semanticSearch(q), (id: string) => manager.togglePin(id), (s1: Snapshot, s2: Snapshot) => compareSnapshots(s1, s2));
+    }
 }
 
 async function showHistoryForSelection() {
@@ -376,7 +392,12 @@ async function showHistoryForSelection() {
     const history = await storage.getHistoryForFile(uri);
     try {
         const filtered = await historyFilter.filterHistoryForSelection(history, uri, editor.selection);
-        viewProvider.show(filtered, uri, (s: Snapshot) => getDiffForSnapshot(s, uri), editor.selection, (q: string, sc: boolean) => storage.search(q, sc), (s: Snapshot) => explainSnapshot(s, uri), (q: string) => manager.semanticSearch(q), (id: string) => manager.togglePin(id), (s1: Snapshot, s2: Snapshot) => compareSnapshots(s1, s2));
+        if (vscode.workspace.getConfiguration('chronos').get('viewMode') === 'panel') {
+            panelProvider.showLocalHistory(filtered, uri.fsPath, editor.selection);
+            vscode.commands.executeCommand('chronos.historyPanel.focus');
+        } else {
+            viewProvider.show(filtered, uri, (s: Snapshot) => getDiffForSnapshot(s, uri), editor.selection, (q: string, sc: boolean) => storage.search(q, sc), (s: Snapshot) => explainSnapshot(s, uri), (q: string) => manager.semanticSearch(q), (id: string) => manager.togglePin(id), (s1: Snapshot, s2: Snapshot) => compareSnapshots(s1, s2));
+        }
     } catch (e) {}
 }
 
@@ -476,6 +497,30 @@ async function explainGitCommit(commit: GitCommit): Promise<string> {
     return await aiService.explainDiff(commit.diff);
 }
 
+async function showGitHistory() {
+    const editor = vscode.window.activeTextEditor;
+    if (!editor) return;
+    try {
+        const commits = await gitService.getHistoryForFile(editor.document.uri.fsPath, { maxCommits: 100, followRenames: true, dateFormat: 'yyyy-MM-dd HH:mm' });
+        if (commits.length > 0) {
+            if (vscode.workspace.getConfiguration('chronos').get('viewMode') === 'panel') {
+                panelProvider.showGitHistory(commits, editor.document.uri.fsPath);
+                vscode.commands.executeCommand('chronos.historyPanel.focus');
+            } else {
+                viewProvider.showGit(
+                    commits, 
+                    editor.document.uri.fsPath, 
+                    undefined as any,
+                    (c: GitCommit) => explainGitCommit(c),
+                    (h1: string, h2: string) => gitService.getCommitDiff(h1, h2, editor.document.uri.fsPath, 0, 0) // Placeholder range if needed
+                );
+            }
+        }
+    } catch (e) {
+        vscode.window.showErrorMessage('Failed to show git history: ' + e);
+    }
+}
+
 async function gitHistoryForSelection() {
     const editor = vscode.window.activeTextEditor;
     if (!editor) return;
@@ -484,13 +529,18 @@ async function gitHistoryForSelection() {
     try {
         const commits = await gitService.getHistoryForSelection(editor.document.uri.fsPath, selection.start.line, selection.end.line, { maxCommits: 100, followRenames: true, dateFormat: 'yyyy-MM-dd HH:mm' });
         if (commits.length > 0) {
-            viewProvider.showGit(
-                commits, 
-                editor.document.uri.fsPath, 
-                { startLine: selection.start.line, endLine: selection.end.line },
-                (c: GitCommit) => explainGitCommit(c),
-                (h1: string, h2: string) => gitService.getCommitDiff(h1, h2, editor.document.uri.fsPath, selection.start.line, selection.end.line)
-            );
+            if (vscode.workspace.getConfiguration('chronos').get('viewMode') === 'panel') {
+                panelProvider.showGitHistory(commits, editor.document.uri.fsPath, { startLine: selection.start.line, endLine: selection.end.line });
+                vscode.commands.executeCommand('chronos.historyPanel.focus');
+            } else {
+                viewProvider.showGit(
+                    commits, 
+                    editor.document.uri.fsPath, 
+                    { startLine: selection.start.line, endLine: selection.end.line },
+                    (c: GitCommit) => explainGitCommit(c),
+                    (h1: string, h2: string) => gitService.getCommitDiff(h1, h2, editor.document.uri.fsPath, selection.start.line, selection.end.line)
+                );
+            }
         }
     } catch (e) {}
 }

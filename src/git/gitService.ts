@@ -165,6 +165,39 @@ export class GitService {
         });
     }
 
+    async getHistoryForFile(filePath: string, config: GitHistoryConfig): Promise<GitCommit[]> {
+        const workspaceFolder = vscode.workspace.getWorkspaceFolder(vscode.Uri.file(filePath));
+        if (!workspaceFolder) {
+            throw new Error('File not in workspace');
+        }
+
+        const relativePath = path.relative(workspaceFolder.uri.fsPath, filePath);
+        const args = ['-c', 'color.ui=false', 'log', '-p', '--follow', '--', relativePath];
+        
+        return new Promise((resolve) => {
+            const git = cp.spawn('git', args, { cwd: workspaceFolder.uri.fsPath });
+            let stdout = '';
+            let stderr = '';
+
+            git.stdout.on('data', data => stdout += data);
+            git.stderr.on('data', data => stderr += data);
+
+            git.on('error', err => {
+                console.warn('Git log -p failed to start:', err);
+                resolve([]);
+            });
+
+            git.on('close', code => {
+                if (code !== 0) {
+                    console.warn('Git log -p failed:', stderr);
+                    resolve([]); 
+                    return;
+                }
+                resolve(this.parseGitLogL(stdout, config.maxCommits));
+            });
+        });
+    }
+
     async getDiff(file1: string, file2: string): Promise<string> {
         // git diff --no-index <file1> <file2>
         const args = ['-c', 'color.ui=false', 'diff', '--no-index', file1, file2];

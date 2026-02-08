@@ -2,7 +2,9 @@
 
 **Comprehensive history management for VS Code.**
 
-Chronos History provides a robust safety net by automatically tracking local snapshots of your work, independent of Git. Effortlessly restore previous versions or use specialized Git views to trace history for specific code selections.
+Chronos History provides a robust safety net by automatically tracking local snapshots of your work, independent of Git. Effortlessly restore previous versions, use specialized Git views, and leverage AI to understand your project's evolution.
+
+---
 
 ## 📖 Features & Usage
 
@@ -13,6 +15,7 @@ Chronos History
  ├─ Show History              (File-specific timeline)
  ├─ Show History for Selection (History for selected lines)
  ├───────────────────────────
+ ├─ Show Git History          (Git commits for current file)
  ├─ Git History for Selection  (Git commits for selected lines)
  ├───────────────────────────
  ├─ Show Project History      (Global timeline of all changes)
@@ -38,7 +41,33 @@ Chronos now features an intuitive, two-step comparison model similar to professi
 
 ---
 
-### 🛠 Detailed Menu Reference
+## 🎨 User Interface Styles
+
+Chronos offers two distinct UI experiences, configurable via `chronos.ui.useJetBrainsStyle`:
+
+### 1. JetBrains Style (Default)
+A high-density, **table-based UI** mimicking the professional experience of IntelliJ or WebStorm.
+*   **Table View:** Multi-column layout with Time, Event, and Message.
+*   **Details Pane:** A side panel opens on selection to show full metadata and actions.
+*   **Best for:** Power users and those accustomed to JetBrains IDEs.
+
+### 2. Standard VS Code Style
+A modern, **card-based list** that feels native to VS Code's aesthetic.
+*   **List View:** Vertical cards with time badges and line change magnitudes (+/-).
+*   **Top Header:** Actions appear at the top of the view when an item is selected.
+
+---
+
+## 📂 Sidebar Views
+
+Chronos adds a dedicated icon to your Activity Bar (the "Black Hole" icon) with two essential views:
+
+*   **Deleted Files:** A list of files you've recently deleted. You can **Preview** their content or **Restore** them with a single click.
+*   **Recent Activity:** A quick-access feed of the files you've worked on in the last 24 hours.
+
+---
+
+## 🛠 Detailed Menu Reference
 
 #### 1. Show History (with Session Replay)
 **The File-specific "Time Machine".**
@@ -95,24 +124,24 @@ Chronos takes snapshots automatically, but sometimes you want to mark a specific
 Restore your entire workspace to a specific point in time. This acts as a "Soft Undo" for the whole project.
 *   **How to Use:** Run "Chronos: Restore Project to..." from the Command Palette, and select a timestamp from the list. All files will be reverted to their state at that moment.
 
+#### 10. Generate Commit Message
+**AI-Powered Drafts.**
+Let Gemini analyze your local changes and draft a commit message for you.
+*   **Context Aware:** Uses the diff of your current changes to generate a relevant summary.
+
+#### 11. Export & Import History
+**Backup and Share.**
+Move your history between machines or keep safety backups.
+*   **Export:** Saves your entire history to a `.zip` file.
+*   **Import:** Merges a backup file into your current history.
+
 ---
 
 ## 🌟 New Features
 
-### ⏳ Project-Wide Time Travel
-Mistakes happen. With Global Restore, you can roll back your entire project to a previous state, ensuring you can always recover from a bad refactor or accidental mass-deletion.
-
 ### 📝 Automatic Changelog Generator
 Save hours of manual documentation. Chronos can analyze your project history between any two points in time and generate a clean, formatted `CHANGELOG.md` draft categorized by Features, Bug Fixes, and Refactorings.
 *   **How to Use:** Run "Chronos: Generate Changelog (AI)..." from the Command Palette and select your desired range (Presets or Custom).
-
-### 📊 Advanced Visualization (Graph View)
-The new History Graph provides a bird's-eye view of how your project has evolved across multiple files. It makes it easy to spot clusters of activity and trace history through experiments.
-
-### ☁️ Cloud Sync & Backup (Export/Import)
-Easily move your history between machines or keep safety backups.
-*   **Export:** Compresses your entire history into a single `.zip` file.
-*   **Import:** Intelligently merges a backup file into your current history, skipping duplicates.
 
 ### 🤝 Collaborative Sharing
 Share specific moments of your work with teammates.
@@ -121,59 +150,30 @@ Share specific moments of your work with teammates.
 
 ### ✨ AI-Powered Insights (Gemini)
 Chronos now integrates with Google Gemini to provide intelligent analysis of your code history.
-*   **Daily Progress Briefing:** Wake up to a summary of your work. When you start VS Code, Chronos analyzes your last session and provides a concise briefing of your achievements—perfect for stand-ups!
-*   **Smart Summaries:** Automatically generates concise (5-word) labels for your snapshots based on code diffs.
-*   **"Explain This Change":** A dedicated button in the History View that provides an AI explanation of the *intent* and *logic* behind any snapshot.
-*   **Experiment Post-Mortem:** When stopping an "Experiment", Gemini generates a summary of your work or suggests a commit message.
-
-### ↔️ Side-by-Side Diffs
-Whether viewing local history or Git commits, Chronos uses VS Code's native side-by-side diff editor by default. This provides syntax highlighting, intellisense, and a familiar interface.
-*   **Toggle:** Prefer the old inline view? Disable `chronos.showDiffSideBySide` in settings.
+*   **🌅 Daily Progress Briefing:** Wake up to a summary of your work. When you start VS Code, Chronos analyzes your last session and provides a concise briefing of your achievements—perfect for stand-ups!
+*   **🧠 Semantic Search:** Don't just search for text—search for *intent*. "Show me where I fixed the auth bug" will find relevant snapshots even if the word "auth" isn't in the message.
+*   **✨ Explain Changes:** A dedicated button in any history view that provides an AI explanation of the *intent* and *logic* behind any snapshot.
+*   **📈 Smart Summaries:** Automatically generates concise labels for your snapshots as you work.
 
 ### 🧪 Local Experiments (Safe Mode)
 Safely try out risky refactors without Git branches.
 *   **Start:** Use the Command Palette (`Cmd+Shift+P`) -> `Chronos: Start Experiment`.
-*   **Manage:** Use the Status Bar item to "Keep" or "Discard" the experiment.
-*   **Discard:** Instantly reverts your file to the state before the experiment started.
-
-### 🔍 Full-Text History Search
-Search through your entire history of snapshots using the search bar at the top of any History View.
-
-### ♻️ Deleted File Resurrection
-Accidentally deleted a file? Find your deleted file in the "Deleted Files" list in the Chronos sidebar and click the restore icon.
-
-### ↔️ Cross-File Comparison
-Compare a historical version of one file with the current content of a different file. This is extremely useful during refactoring when code is moved between files.
-*   **How to Use:** Open the target file in your editor, then find the snapshot of the source file in the History View and click **Compare with Active**.
+*   **Manage:** Use the Status Bar item or Command Palette to "Keep" or "Discard" the experiment.
+*   **Discard:** Instantly reverts all files to the state before the experiment started.
 
 ---
 
 ## ⚙️ Configuration
 
-Tune the extension in **Settings** (`Cmd+,` -> search `chronos`):
-
 | Setting | Default | Description |
 | :--- | :--- | :--- |
+| `chronos.ui.useJetBrainsStyle` | `true` | Toggle between Table and Card UI styles. |
+| `chronos.viewMode` | `editor` | Display history in a main `editor` tab or a bottom `panel`. |
 | `chronos.ai.apiKey` | `""` | Your Google Gemini API Key. |
-| `chronos.ai.model` | `gemini-2.0-flash` | Gemini Model ID (e.g., `gemini-3-flash-preview`). |
-| `chronos.ai.smartSummaries` | `true` | Auto-generate AI summaries for new snapshots. |
-| `chronos.ai.explainChanges` | `true` | Enable the "Explain" button in history view. |
-| `chronos.ai.experimentPostMortem` | `true` | Generate AI insights when stopping experiments. |
+| `chronos.ai.language` | `English` | Language for AI summaries and briefings. |
 | `chronos.showDiffSideBySide` | `true` | Use native side-by-side diff editor. |
-| `chronos.diff.syncScroll` | `true` | Synchronize scrolling in diff view. |
-| `chronos.experiments` | `true` | Enable the "Experiments" functionality. |
 | `chronos.maxDays` | `30` | Days to keep history before pruning (skips pinned snapshots). |
 | `chronos.saveInProjectFolder` | `false` | Save history in `.history/` inside your project. |
-
----
-
-## 🔍 Troubleshooting & Diagnostics
-
-If your history appears empty or you encounter issues:
-
-1.  **Run Diagnostics:** Open the Command Palette (`Cmd+Shift+P`) and run **"Chronos: Run Diagnostics"**. This generates a report showing loaded indices and matching paths.
-2.  **View Logs:** Run **"Chronos: Show Chronos Logs"** to see internal error messages and storage activity.
-3.  **Force Refresh:** Saving a file will always force a new snapshot and refresh the history index for that file.
 
 ---
 
@@ -182,5 +182,4 @@ If your history appears empty or you encounter issues:
 
 ---
 
-**[Developer Guide & Testing](devel_readme.md)** | **[Contributing Guide](CONTRIBUTING.md)**
-
+**[Developer Guide & Testing](devel_readme.md)** | **[Contributing Guide](CONTRIBUTING.md)** | **[License](LICENSE)**

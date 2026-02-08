@@ -2,7 +2,7 @@
   "name": "chronos-history",
   "displayName": "Chronos History",
   "description": "Comprehensive Chronos and Git History tracking for VS Code.",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "publisher": "IldioMartins",
   "license": "MIT",
   "icon": "resources/icon.png",
@@ -24,6 +24,7 @@
     "onCommand:chronos.showProjectHistory",
     "onCommand:chronos.showRecentChanges",
     "onCommand:chronos.putLabel",
+    "onCommand:chronos.showGitHistory",
     "onCommand:chronos.gitHistoryForSelection"
   ],
   "main": "./out/extension.js",
@@ -56,6 +57,17 @@
           "type": "boolean",
           "default": true,
           "description": "Enable the 'Experiments' feature, which allows you to start a temporary coding session (safe checkpoint) and easily keep or discard changes."
+        },
+        "chronos.viewMode": {
+          "type": "string",
+          "enum": ["editor", "panel"],
+          "default": "editor",
+          "description": "Choose where to display the history list: 'editor' (Standard tab) or 'panel' (Bottom panel like JetBrains IDEs)."
+        },
+        "chronos.ui.useJetBrainsStyle": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable a more professional, table-based UI mimicking the JetBrains IDE history experience."
         },
         "chronos.showDiffSideBySide": {
           "type": "boolean",
@@ -192,6 +204,11 @@
         "icon": "$(history)"
       },
       {
+        "command": "chronos.showGitHistory",
+        "title": "Show Git History",
+        "category": "Git"
+      },
+      {
         "command": "chronos.gitHistoryForSelection",
         "title": "Git History for Selection",
         "category": "Git"
@@ -281,6 +298,13 @@
           "title": "Chronos",
           "icon": "resources/black-hole.svg"
         }
+      ],
+      "panel": [
+        {
+          "id": "chronos-panel",
+          "title": "Chronos History",
+          "icon": "resources/black-hole.svg"
+        }
       ]
     },
     "views": {
@@ -292,6 +316,13 @@
         {
           "id": "chronos.activity",
           "name": "Recent Activity (24h)"
+        }
+      ],
+      "chronos-panel": [
+        {
+          "type": "webview",
+          "id": "chronos.historyPanel",
+          "name": "History List"
         }
       ]
     },
@@ -331,6 +362,10 @@
           "when": "editorHasSelection"
         },
         {
+          "command": "chronos.showGitHistory",
+          "group": "2_git@0"
+        },
+        {
           "command": "chronos.gitHistoryForSelection",
           "group": "2_git@1",
           "when": "editorHasSelection"
@@ -340,21 +375,33 @@
           "group": "3_global@1"
         },
         {
-          "command": "chronos.showRecentChanges",
+          "command": "chronos.showGraph",
           "group": "3_global@2"
         },
         {
-          "command": "chronos.toggleHeatmap",
+          "command": "chronos.showRecentChanges",
           "group": "3_global@3"
         },
         {
-          "command": "chronos.putLabel",
+          "command": "chronos.toggleHeatmap",
           "group": "3_global@4"
         },
         {
+          "command": "chronos.putLabel",
+          "group": "3_global@5"
+        },
+        {
           "command": "chronos.generateCommitMessage",
-          "group": "3_global@5",
+          "group": "3_global@6",
           "when": "config.chronos.ai.apiKey"
+        },
+        {
+          "command": "chronos.exportHistory",
+          "group": "4_manage@1"
+        },
+        {
+          "command": "chronos.importHistory",
+          "group": "4_manage@2"
         }
       ]
     },
