@@ -60,7 +60,10 @@
         },
         "chronos.viewMode": {
           "type": "string",
-          "enum": ["editor", "panel"],
+          "enum": [
+            "editor",
+            "panel"
+          ],
           "default": "editor",
           "description": "Choose where to display the history list: 'editor' (Standard tab) or 'panel' (Bottom panel like JetBrains IDEs)."
         },
@@ -78,6 +81,30 @@
           "type": "boolean",
           "default": true,
           "description": "Synchronize scrolling in the diff view."
+        },
+        "chronos.diff.enableHtmlPreview": {
+          "type": "boolean",
+          "default": true,
+          "description": "If enabled, shows a rich HTML preview of changes directly within the Chronos view (IntelliJ style)."
+        },
+        "chronos.diff.htmlPreviewLayout": {
+          "type": "string",
+          "enum": [
+            "side-by-side",
+            "unified"
+          ],
+          "default": "side-by-side",
+          "description": "Choose the layout for the HTML diff preview: 'side-by-side' or 'unified'."
+        },
+        "chronos.diff.htmlPreviewPosition": {
+          "type": "string",
+          "enum": [
+            "top",
+            "bottom",
+            "right"
+          ],
+          "default": "top",
+          "description": "Choose where the HTML diff preview should be positioned relative to the history list."
         },
         "chronos.ai.apiKey": {
           "type": "string",

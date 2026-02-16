@@ -412,8 +412,13 @@ export class HistoryManager {
 
     private async onDelete(e: vscode.FileDeleteEvent) {}
 
-    public async putLabel(name: string, description?: string, document?: vscode.TextDocument) {
-        await this.storage.createLabel(name, description, document);
+    public async putLabel(name: string, description?: string, document?: vscode.TextDocument, filePath?: string) {
+        if (!document && filePath) {
+            const fileUri = vscode.Uri.file(filePath);
+            await this.storage.createLabel(name, description, undefined, fileUri);
+        } else {
+            await this.storage.createLabel(name, description, document);
+        }
     }
 
     public async getDeletedFiles(): Promise<string[]> {

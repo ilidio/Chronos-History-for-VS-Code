@@ -29,20 +29,32 @@ Chronos History
  ├─ Import History            (Restore from ZIP)
 ```
 
-## 🚀 Advanced Comparison: The "Select for Compare" Workflow
+## 🚀 Advanced Comparison & Git Deep Dive
 
-Chronos now features an intuitive, two-step comparison model similar to professional IDE tools. 
+Chronos now features an intuitive, two-step comparison model and advanced Git integration similar to professional IDE tools. 
 
-### How the `↔` Button Works:
+### 1. The "Select for Compare" Workflow:
 1.  **Step 1 (Select Source):** Hover over any snapshot or commit and click the **`↔`** button. The item will be highlighted as the **Source**, and a blue banner will appear at the top.
 2.  **Step 2 (Select Target):** Click the **`↔`** button on any *other* item. 
 3.  **Result:** Chronos immediately generates a **Range Diff** showing the cumulative changes between those two points in time.
 *   *To exit comparison mode, simply click **Cancel** in the top banner.*
 
+### 2. New Comparison Capabilities:
+*   **Compare Branch:** Instantly see differences between your current work and the HEAD of any branch.
+*   **Compare Version:** Select any branch and then pick a specific commit from its history to compare against.
+
 ---
 
-## 🎨 User Interface Styles
+## 🎨 User Interface & Experience
 
+### 1. Revamped HTML Preview ("Context Bar")
+Our HTML previews and diff views now feature a professional **Context Bar**. This bar automatically extracts and displays version details (like `COMMIT 7a2b3c` or `BRANCH main`) and the full file path, keeping the code area clean and focused on your work.
+
+### 2. UI/UX Enhancements
+*   **Safe Editing:** Side-by-side diffs against the **"Current"** version now use the actual workspace file. This allows you to **edit and save directly** from the diff editor while viewing changes.
+*   **Reliable Branch Selection:** The branch selection menu now works seamlessly, even when the extension panel or focused views are active.
+
+### 3. UI Styles (Configurable)
 Chronos offers two distinct UI experiences, configurable via `chronos.ui.useJetBrainsStyle`:
 
 ### 1. JetBrains Style (Default)

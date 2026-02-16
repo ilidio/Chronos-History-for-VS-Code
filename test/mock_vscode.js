@@ -67,6 +67,8 @@ const mockVscode = {
         showErrorMessage: (msg) => console.error('Error:', msg),
         showInputBox: async (opts) => { console.log('InputBox:', opts.prompt); return 'MockInput'; },
         registerTreeDataProvider: () => {},
+        registerWebviewViewProvider: () => {},
+        createTreeView: () => ({ dispose: () => {} }),
         setStatusBarMessage: () => {},
         createTextEditorDecorationType: () => ({ dispose: () => {} }),
         onDidChangeActiveTextEditor: () => ({ dispose: () => {} }),
@@ -79,7 +81,10 @@ const mockVscode = {
                         // Mock receiving a message immediately if needed, or store cb
                     },
                     postMessage: (msg) => {}
-                }
+                },
+                onDidDispose: (cb) => {},
+                reveal: () => {},
+                dispose: () => {}
             };
         },
         activeTextEditor: undefined 

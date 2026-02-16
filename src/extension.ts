@@ -43,7 +43,7 @@ export function activate(context: vscode.ExtensionContext) {
         storage = new HistoryStorage(context, outputChannel);
         viewProvider = new HistoryViewProvider(context.extensionUri, outputChannel);
         panelProvider = new HistoryPanelProvider(context.extensionUri);
-        graphViewProvider = new GraphViewProvider(context.extensionUri, outputChannel);
+        graphViewProvider = new GraphViewProvider(context.extensionUri);
         gitService = new GitService();
         aiService = new AIService();
         
@@ -99,6 +99,132 @@ export function activate(context: vscode.ExtensionContext) {
             vscode.commands.registerCommand('_chronos.openDiff', openDiff),
             vscode.commands.registerCommand('_chronos.openDiffGit', openDiffGit),
             vscode.commands.registerCommand('_chronos.openDiffGitCurrent', openDiffGitCurrent),
+            vscode.commands.registerCommand('_chronos.getDiffForSnapshot', async (s, path) => getDiffForSnapshot(s, path ? vscode.Uri.file(path) : undefined)),
+            vscode.commands.registerCommand('_chronos.getDiffWithBranch', async (branch: string, filePath: string) => {
+                const workspaceFolder = vscode.workspace.getWorkspaceFolder(vscode.Uri.file(filePath));
+                if (!workspaceFolder) return '';
+                const relativePath = path.relative(workspaceFolder.uri.fsPath, filePath);
+                try {
+                    const historicalContent = await gitService.getFileContentFromBranch(branch, relativePath, workspaceFolder.uri.fsPath);
+                    const currentContent = fs.existsSync(filePath) ? fs.readFileSync(filePath, 'utf8') : '';
+                    
+                    const ext = path.extname(filePath) || '.txt';
+                    const temp1 = await createTempFile(`branch_${branch}_${path.basename(filePath)}${ext}`, historicalContent);
+                    const temp2 = await createTempFile(`current_${path.basename(filePath)}${ext}`, currentContent);
+                    
+                    let diff = await gitService.getDiff(temp1.fsPath, temp2.fsPath);
+                    // Standardize diff paths
+                    const escapeRegex = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+                    diff = diff.replace(new RegExp(escapeRegex(temp1.fsPath), 'g'), `a/${branch}/${relativePath}`);
+                    diff = diff.replace(new RegExp(escapeRegex(temp2.fsPath), 'g'), `b/current/${relativePath}`);
+                    return diff;
+                } catch (e) { 
+                    outputChannel.appendLine(`Error getting diff with branch ${branch}: ${e}`);
+                    return `Error calculating diff with branch ${branch}.`; 
+                }
+            }),
+            vscode.commands.registerCommand('_chronos.getDiffTwoSnapshots', async (s1: Snapshot, s2: Snapshot) => {
+                return await compareSnapshots(s1, s2);
+            }),
+            vscode.commands.registerCommand('_chronos.getDiffSnapshotWithBranch', async (snapshot: Snapshot, branch: string) => {
+                const fileUri = resolveSnapshotUri(snapshot.filePath);
+                const workspaceFolder = vscode.workspace.getWorkspaceFolder(fileUri);
+                if (!workspaceFolder) return '';
+                const relativePath = path.relative(workspaceFolder.uri.fsPath, fileUri.fsPath);
+                try {
+                    const branchContent = await gitService.getFileContentFromBranch(branch, relativePath, workspaceFolder.uri.fsPath);
+                    const snapshotUri = await storage.getSnapshotUri(snapshot, fileUri);
+                    const snapshotContent = (await vscode.workspace.fs.readFile(snapshotUri)).toString();
+                    
+                    const temp1 = await createTempFile(`snapshot_${snapshot.id.substring(0,8)}_${path.basename(snapshot.filePath)}`, snapshotContent);
+                    const temp2 = await createTempFile(`branch_${branch}_${path.basename(snapshot.filePath)}`, branchContent);
+                    
+                    let diff = await gitService.getDiff(temp1.fsPath, temp2.fsPath);
+                    const escapeRegex = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+                    diff = diff.replace(new RegExp(escapeRegex(temp1.fsPath), 'g'), `a/snapshot/${snapshot.id.substring(0,8)}/${relativePath}`);
+                    diff = diff.replace(new RegExp(escapeRegex(temp2.fsPath), 'g'), `b/branch/${branch}/${relativePath}`);
+                    return diff;
+                } catch (e) { return `Error: ${e}`; }
+            }),
+            vscode.commands.registerCommand('_chronos.getDiffCommitWithBranch', async (commit: GitCommit, branch: string, filePath: string) => {
+                const workspaceFolder = vscode.workspace.getWorkspaceFolder(vscode.Uri.file(filePath));
+                if (!workspaceFolder) return '';
+                const relativePath = path.relative(workspaceFolder.uri.fsPath, filePath);
+                try {
+                    const branchContent = await gitService.getFileContentFromBranch(branch, relativePath, workspaceFolder.uri.fsPath);
+                    const { stdout: commitContent } = await gitService.runGit(['show', `${commit.hash}:${relativePath}`], workspaceFolder.uri.fsPath);
+                    
+                    const temp1 = await createTempFile(`commit_${commit.hash.substring(0,7)}_${path.basename(filePath)}`, commitContent);
+                    const temp2 = await createTempFile(`branch_${branch}_${path.basename(filePath)}`, branchContent);
+                    
+                    let diff = await gitService.getDiff(temp1.fsPath, temp2.fsPath);
+                    const escapeRegex = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+                    diff = diff.replace(new RegExp(escapeRegex(temp1.fsPath), 'g'), `a/commit/${commit.hash.substring(0,7)}/${relativePath}`);
+                    diff = diff.replace(new RegExp(escapeRegex(temp2.fsPath), 'g'), `b/branch/${branch}/${relativePath}`);
+                    return diff;
+                } catch (e) { return `Error: ${e}`; }
+            }),
+            vscode.commands.registerCommand('chronos.compareSnapshotWithBranch', async (snapshot: Snapshot, branchName: string) => {
+                const fileUri = resolveSnapshotUri(snapshot.filePath);
+                const workspaceFolder = vscode.workspace.getWorkspaceFolder(fileUri);
+                if (!workspaceFolder) return;
+                const relativePath = path.relative(workspaceFolder.uri.fsPath, fileUri.fsPath);
+                try {
+                    const branchContent = await gitService.getFileContentFromBranch(branchName, relativePath, workspaceFolder.uri.fsPath);
+                    const snapshotUri = await storage.getSnapshotUri(snapshot, fileUri);
+                    const branchTemp = await createTempFile(`branch_${branchName.replace(/[\/\\]/g, '_')}_${path.basename(fileUri.fsPath)}`, branchContent);
+                    const title = `${path.basename(fileUri.fsPath)} (Snapshot ${new Date(snapshot.timestamp).toLocaleString()}) ↔ (${branchName})`;
+                    await vscode.commands.executeCommand('vscode.diff', snapshotUri, branchTemp, title);
+                } catch (e) { vscode.window.showErrorMessage(`Failed: ${e}`); }
+            }),
+            vscode.commands.registerCommand('chronos.compareCommitWithBranch', async (commit: GitCommit, branchName: string, filePath: string) => {
+                const workspaceFolder = vscode.workspace.getWorkspaceFolder(vscode.Uri.file(filePath));
+                if (!workspaceFolder) return;
+                const relativePath = path.relative(workspaceFolder.uri.fsPath, filePath);
+                try {
+                    const branchContent = await gitService.getFileContentFromBranch(branchName, relativePath, workspaceFolder.uri.fsPath);
+                    const { stdout: commitContent } = await gitService.runGit(['show', `${commit.hash}:${relativePath}`], workspaceFolder.uri.fsPath);
+                    const commitTemp = await createTempFile(`commit_${commit.hash.substring(0,7)}_${path.basename(filePath)}`, commitContent);
+                    const branchTemp = await createTempFile(`branch_${branchName.replace(/[\/\\]/g, '_')}_${path.basename(filePath)}`, branchContent);
+                    const title = `${path.basename(filePath)} (Commit ${commit.hash.substring(0,7)}) ↔ (${branchName})`;
+                    await vscode.commands.executeCommand('vscode.diff', commitTemp, branchTemp, title);
+                } catch (e) { vscode.window.showErrorMessage(`Failed: ${e}`); }
+            }),
+            vscode.commands.registerCommand('_chronos.getBranches', async (filePath?: string) => {
+                let workspaceFolder: vscode.WorkspaceFolder | undefined;
+                
+                if (filePath) {
+                    workspaceFolder = vscode.workspace.getWorkspaceFolder(vscode.Uri.file(filePath));
+                }
+                
+                if (!workspaceFolder && vscode.window.activeTextEditor) {
+                    workspaceFolder = vscode.workspace.getWorkspaceFolder(vscode.window.activeTextEditor.document.uri);
+                }
+                
+                if (!workspaceFolder && vscode.workspace.workspaceFolders && vscode.workspace.workspaceFolders.length > 0) {
+                    workspaceFolder = vscode.workspace.workspaceFolders[0];
+                }
+
+                if (!workspaceFolder) return [];
+                return await gitService.getBranches(workspaceFolder.uri.fsPath);
+            }),
+            vscode.commands.registerCommand('chronos.compareWithBranch', compareWithBranch),
+            vscode.commands.registerCommand('chronos.compareWithBranchVersion', compareWithBranchVersion),
+            vscode.commands.registerCommand('_chronos.getGitDiff', async (commit, filePath) => {
+                if (commit.diff) return commit.diff;
+                try {
+                    // Try to get diff from parent if not present
+                    const workspaceFolder = vscode.workspace.getWorkspaceFolder(vscode.Uri.file(filePath));
+                    if (!workspaceFolder) return '';
+                    const { stdout } = await gitService.runGit(['show', '--pretty=format:', commit.hash, '--', filePath], workspaceFolder.uri.fsPath);
+                    return stdout;
+                } catch (e) {
+                    return '';
+                }
+            }),
+            vscode.commands.registerCommand('_chronos.savePatch', async (diffText: string) => {
+                await saveDiffAsPatch(diffText);
+            }),
             vscode.commands.registerCommand('chronos.showLogs', () => outputChannel.show(true)),
             vscode.commands.registerCommand('chronos.runDiagnostics', runDiagnostics),
             vscode.commands.registerCommand('chronos.exportHistory', exportHistory),
@@ -261,10 +387,15 @@ async function openDiffGitCurrent(commit: GitCommit, filePath: string, selection
         }
 
         const leftTemp = await createTempFile(`git_${commit.hash.substring(0,7)}${selection ? '_selection' : ''}${ext}`, histLines);
-        const rightTemp = await createTempFile(`current${selection ? '_selection' : ''}${ext}`, currLines);
         
         const title = `${fileName} (${commit.hash.substring(0, 7)}) ↔ ${fileName} (Current)`;
-        await vscode.commands.executeCommand('vscode.diff', leftTemp, rightTemp, title, { viewColumn: vscode.ViewColumn.Beside, preview: true });
+        
+        if (selection) {
+            const rightTemp = await createTempFile(`current_selection${ext}`, currLines);
+            await vscode.commands.executeCommand('vscode.diff', leftTemp, rightTemp, title, { viewColumn: vscode.ViewColumn.Beside, preview: true });
+        } else {
+            await vscode.commands.executeCommand('vscode.diff', leftTemp, vscode.Uri.file(filePath), title, { viewColumn: vscode.ViewColumn.Beside, preview: true });
+        }
     } catch (e) {
         vscode.window.showErrorMessage('Failed to open diff with current: ' + e);
     }
@@ -380,7 +511,22 @@ async function showHistory(uri?: vscode.Uri, selection?: vscode.Range) {
         panelProvider.showLocalHistory(clustered, uri.fsPath, selection);
         vscode.commands.executeCommand('chronos.historyPanel.focus');
     } else {
-        viewProvider.show(clustered, uri, (s: Snapshot) => getDiffForSnapshot(s, uri), selection, (q: string, sc: boolean) => storage.search(q, sc), (s: Snapshot) => explainSnapshot(s, uri), (q: string) => manager.semanticSearch(q), (id: string) => manager.togglePin(id), (s1: Snapshot, s2: Snapshot) => compareSnapshots(s1, s2));
+        viewProvider.show(
+            clustered, 
+            uri, 
+            (s: Snapshot) => getDiffForSnapshot(s, uri), 
+            selection, 
+            (q: string, sc: boolean) => storage.search(q, sc), 
+            (s: Snapshot) => explainSnapshot(s, uri), 
+            (q: string) => manager.semanticSearch(q), 
+            (id: string) => manager.togglePin(id), 
+            (s1: Snapshot, s2: Snapshot) => compareSnapshots(s1, s2),
+            async (name: string, filePath: string) => {
+                await manager.putLabel(name, '', undefined, filePath);
+                const updatedHistory = await storage.getHistoryForFile(vscode.Uri.file(filePath));
+                viewProvider.updateSnapshots(manager.clusterSnapshots(updatedHistory));
+            }
+        );
     }
 }
 
@@ -427,8 +573,30 @@ async function explainSnapshot(snapshot: Snapshot, uri?: vscode.Uri): Promise<st
 }
 
 async function putLabel() {
-    const name = await vscode.window.showInputBox({ prompt: 'Label Name' });
-    if (name) await manager.putLabel(name, '', vscode.window.activeTextEditor?.document);
+    const editor = vscode.window.activeTextEditor;
+    const name = await vscode.window.showInputBox({ prompt: 'Label Name (e.g. Before refactor)' });
+    if (name) {
+        await manager.putLabel(name, '', editor?.document);
+        if (editor) {
+            showHistory(editor.document.uri);
+        }
+    }
+}
+
+async function saveDiffAsPatch(diffText: string) {
+    const uri = await vscode.window.showSaveDialog({
+        defaultUri: vscode.Uri.file('changes.patch'),
+        filters: { 'Patch Files': ['patch', 'diff'] },
+        saveLabel: 'Save Patch'
+    });
+    if (uri) {
+        try {
+            fs.writeFileSync(uri.fsPath, diffText);
+            vscode.window.showInformationMessage('Patch saved successfully.');
+        } catch (e) {
+            vscode.window.showErrorMessage('Failed to save patch: ' + e);
+        }
+    }
 }
 
 async function compareToCurrent(snapshotId: string, filePath?: string) {
@@ -600,6 +768,114 @@ async function shareSnapshot(snapshot: Snapshot) {
         } catch (e) {
             vscode.window.showErrorMessage('Sharing failed: ' + e);
         }
+    }
+}
+
+async function compareWithBranch(branchName?: string) {
+    const editor = vscode.window.activeTextEditor;
+    if (!editor) {
+        vscode.window.showErrorMessage('No active editor to compare.');
+        return;
+    }
+    const uri = editor.document.uri;
+    const workspaceFolder = vscode.workspace.getWorkspaceFolder(uri);
+    if (!workspaceFolder) return;
+
+    let selectedBranch = branchName;
+    if (!selectedBranch) {
+        const branches = await gitService.getBranches(workspaceFolder.uri.fsPath);
+        if (branches.length === 0) {
+            vscode.window.showInformationMessage('No branches found.');
+            return;
+        }
+        // Move common branches to top
+        const common = ['main', 'master', 'develop', 'dev'];
+        branches.sort((a, b) => {
+            const aIdx = common.indexOf(a);
+            const bIdx = common.indexOf(b);
+            if (aIdx !== -1 && bIdx !== -1) return aIdx - bIdx;
+            if (aIdx !== -1) return -1;
+            if (bIdx !== -1) return 1;
+            return a.localeCompare(b);
+        });
+
+        selectedBranch = await vscode.window.showQuickPick(branches, { placeHolder: 'Select branch to compare with current file' });
+    }
+    
+    if (!selectedBranch) return;
+
+    try {
+        const relativePath = path.relative(workspaceFolder.uri.fsPath, uri.fsPath);
+        const historicalContent = await gitService.getFileContentFromBranch(selectedBranch, relativePath, workspaceFolder.uri.fsPath);
+        
+        if (historicalContent === '' && !fs.existsSync(uri.fsPath)) {
+            vscode.window.showInformationMessage(`File not found in current workspace and not found in branch ${selectedBranch}.`);
+            return;
+        }
+
+        const ext = path.extname(uri.fsPath) || '.txt';
+        const branchTemp = await createTempFile(`branch_${selectedBranch.replace(/[\/\\]/g, '_')}_${path.basename(uri.fsPath)}${ext}`, historicalContent);
+        
+        const title = `${path.basename(uri.fsPath)} (${selectedBranch}) ↔ Current`;
+        await vscode.commands.executeCommand('vscode.diff', branchTemp, uri, title);
+    } catch (e) {
+        vscode.window.showErrorMessage('Failed to compare with branch: ' + e);
+    }
+}
+
+async function compareWithBranchVersion(source?: { snapshot?: Snapshot, commit?: GitCommit, filePath: string }) {
+    const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+    if (!workspaceFolder) return;
+
+    const branches = await gitService.getBranches(workspaceFolder.uri.fsPath);
+    if (branches.length === 0) {
+        vscode.window.showInformationMessage('No branches found.');
+        return;
+    }
+
+    const selectedBranch = await vscode.window.showQuickPick(branches, { placeHolder: 'Step 1: Select branch' });
+    if (!selectedBranch) return;
+
+    const filePath = source?.filePath || vscode.window.activeTextEditor?.document.uri.fsPath;
+    if (!filePath) return;
+
+    const config = vscode.workspace.getConfiguration('gitHistory.selection');
+    const commits = await gitService.getHistoryForFile(filePath, {
+        maxCommits: config.get('maxCommits', 100),
+        followRenames: config.get('followRenames', true),
+        dateFormat: config.get('dateFormat', 'yyyy-MM-dd HH:mm')
+    }, selectedBranch);
+
+    if (commits.length === 0) {
+        vscode.window.showInformationMessage(`No history found for this file on branch ${selectedBranch}.`);
+        return;
+    }
+
+    const pickedCommit = await vscode.window.showQuickPick(
+        commits.map(c => ({
+            label: c.message,
+            description: `${c.hash.substring(0, 7)} by ${c.author} on ${c.date}`,
+            commit: c
+        })),
+        { placeHolder: `Step 2: Select version from ${selectedBranch}` }
+    );
+
+    if (!pickedCommit) return;
+
+    // Now compare the selected source with this specific commit from the other branch
+    if (source?.snapshot) {
+        await vscode.commands.executeCommand('chronos.compareSnapshotWithBranch', source.snapshot, `${pickedCommit.commit.hash}`);
+    } else if (source?.commit) {
+        await vscode.commands.executeCommand('chronos.compareTwoCommits', source.commit.hash, pickedCommit.commit.hash, filePath);
+    } else {
+        // Compare current file with this specific commit
+        const relativePath = path.relative(workspaceFolder.uri.fsPath, filePath);
+        const commitContent = await gitService.runGit(['show', `${pickedCommit.commit.hash}:${relativePath.replace(/\\/g, '/')}`], workspaceFolder.uri.fsPath);
+        
+        const ext = path.extname(filePath) || '.txt';
+        const commitTemp = await createTempFile(`commit_${pickedCommit.commit.hash.substring(0,7)}_${path.basename(filePath)}${ext}`, commitContent.stdout);
+        const title = `${path.basename(filePath)} (${pickedCommit.commit.hash.substring(0, 7)}) ↔ Current`;
+        await vscode.commands.executeCommand('vscode.diff', commitTemp, vscode.Uri.file(filePath), title);
     }
 }
 

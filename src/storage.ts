@@ -259,23 +259,28 @@ export class HistoryStorage {
         return this.saveQueue;
     }
 
-    async createLabel(name: string, description?: string, document?: vscode.TextDocument) {
+    async createLabel(name: string, description?: string, document?: vscode.TextDocument, fileUri?: vscode.Uri) {
         if (document) {
             await this.saveSnapshot(document, 'label', name, description);
             return;
         }
 
-        let targetUri = this.globalStorageRoot;
-        if (vscode.workspace.workspaceFolders && vscode.workspace.workspaceFolders.length > 0) {
-            targetUri = vscode.workspace.workspaceFolders[0].uri;
+        let targetUri = fileUri;
+        if (!targetUri) {
+            if (vscode.workspace.workspaceFolders && vscode.workspace.workspaceFolders.length > 0) {
+                targetUri = vscode.workspace.workspaceFolders[0].uri;
+            } else {
+                targetUri = this.globalStorageRoot;
+            }
         }
+        
         const { indexUri } = await this.getStorageForFile(targetUri);
         const index = await this.loadIndex(indexUri);
 
         index.snapshots.push({
             id: uuidv4(),
             timestamp: Date.now(),
-            filePath: '',
+            filePath: fileUri ? vscode.workspace.asRelativePath(fileUri, false) : '',
             eventType: 'label',
             label: name,
             description

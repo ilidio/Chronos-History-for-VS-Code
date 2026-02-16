@@ -12,7 +12,7 @@ export class GitService {
         const args = ['-c', 'color.ui=false', 'diff', '--shortstat', 'HEAD'];
         
         return new Promise((resolve) => {
-            const git = cp.spawn('git', args, { cwd: workspaceFolders[0].uri.fsPath });
+            const git = cp.spawn('git', args, { cwd: workspaceFolders[0].uri.fsPath, env: process.env });
             let stdout = '';
 
             git.stdout.on('data', data => stdout += data);
@@ -66,7 +66,7 @@ export class GitService {
         const args = ['-c', 'color.ui=false', 'blame', '--line-porcelain', filePath];
         
         return new Promise((resolve) => {
-            const git = cp.spawn('git', args, { cwd: workspaceFolder.uri.fsPath });
+            const git = cp.spawn('git', args, { cwd: workspaceFolder.uri.fsPath, env: process.env });
             let stdout = '';
             let stderr = '';
 
@@ -141,7 +141,7 @@ export class GitService {
         // (git log -L doesn't always play nice with -n). We will limit during parsing.
 
         return new Promise((resolve, reject) => {
-            const git = cp.spawn('git', args, { cwd: workspaceFolder.uri.fsPath });
+            const git = cp.spawn('git', args, { cwd: workspaceFolder.uri.fsPath, env: process.env });
             let stdout = '';
             let stderr = '';
 
@@ -165,17 +165,21 @@ export class GitService {
         });
     }
 
-    async getHistoryForFile(filePath: string, config: GitHistoryConfig): Promise<GitCommit[]> {
+    async getHistoryForFile(filePath: string, config: GitHistoryConfig, branch?: string): Promise<GitCommit[]> {
         const workspaceFolder = vscode.workspace.getWorkspaceFolder(vscode.Uri.file(filePath));
         if (!workspaceFolder) {
             throw new Error('File not in workspace');
         }
 
         const relativePath = path.relative(workspaceFolder.uri.fsPath, filePath);
-        const args = ['-c', 'color.ui=false', 'log', '-p', '--follow', '--', relativePath];
+        const args = ['-c', 'color.ui=false', 'log', '-p', '--follow'];
+        if (branch) {
+            args.push(branch);
+        }
+        args.push('--', relativePath);
         
         return new Promise((resolve) => {
-            const git = cp.spawn('git', args, { cwd: workspaceFolder.uri.fsPath });
+            const git = cp.spawn('git', args, { cwd: workspaceFolder.uri.fsPath, env: process.env });
             let stdout = '';
             let stderr = '';
 
@@ -204,7 +208,7 @@ export class GitService {
         
         return new Promise((resolve, reject) => {
             // We use cwd as the dirname of one of the files or root, doesn't matter much for --no-index
-            const git = cp.spawn('git', args);
+            const git = cp.spawn('git', args, { env: process.env });
             let stdout = '';
             let stderr = '';
 
@@ -236,6 +240,35 @@ export class GitService {
                 else resolve(parseInt(stdout.trim()) * 1000);
             });
         });
+    }
+
+    async getBranches(cwd: string): Promise<string[]> {
+        try {
+            // Get local branches and remote branches, excluding HEAD
+            const { stdout } = await this.runGit(['branch', '-a', '--format=%(refname:short)'], cwd);
+            return stdout.split('\n')
+                .map(b => b.trim().replace(/^remotes\//, ''))
+                .filter(b => b.length > 0 && !b.includes('/HEAD'));
+        } catch (e) {
+            return [];
+        }
+    }
+
+    async getFileContentFromBranch(branch: string, relativePath: string, cwd: string): Promise<string> {
+        // Git expects forward slashes
+        const normalizedPath = relativePath.replace(/\\/g, '/');
+        try {
+            // First check if file exists on that branch
+            const { stdout: exists } = await this.runGit(['ls-tree', '-r', branch, '--name-only', normalizedPath], cwd);
+            if (!exists.trim()) {
+                return ''; // File doesn't exist on this branch
+            }
+            const { stdout } = await this.runGit(['show', `${branch}:${normalizedPath}`], cwd);
+            return stdout;
+        } catch (e) {
+            console.error(`Failed to get content from branch ${branch}:`, e);
+            return ''; 
+        }
     }
 
     private parseGitLogL(output: string, maxCommits: number): GitCommit[] {
