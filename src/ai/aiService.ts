@@ -31,6 +31,10 @@ export class AIService {
         return !!this.client && config.get<boolean>(feature, true);
     }
 
+    public isConfigured(): boolean {
+        return !!this.client;
+    }
+
     private async generate(prompt: string): Promise<string> {
         if (!this.client) {
             console.error("AIService: Client not initialized");

@@ -74,8 +74,24 @@ export function activate(context: vscode.ExtensionContext) {
             vscode.commands.registerCommand('chronos.compareToCurrent', compareToCurrent),
             vscode.commands.registerCommand('chronos.restoreSnapshot', restoreSnapshot),
             vscode.commands.registerCommand('chronos.restoreProject', () => projectRestorer.restoreProjectState()),
-            vscode.commands.registerCommand('chronos.showBriefingForDate', () => manager.showDailyBriefingForDate()),
-            vscode.commands.registerCommand('chronos.generateChangelog', () => manager.generateChangelog()),
+            vscode.commands.registerCommand('chronos.showBriefingForDate', () => {
+                if (!aiService.isConfigured()) {
+                    vscode.window.showWarningMessage("AI features require a Google Gemini API Key. Please add one in settings.", "Open Settings").then(action => {
+                        if (action === "Open Settings") vscode.commands.executeCommand('workbench.action.openSettings', 'chronos.ai.apiKey');
+                    });
+                    return;
+                }
+                manager.showDailyBriefingForDate();
+            }),
+            vscode.commands.registerCommand('chronos.generateChangelog', () => {
+                if (!aiService.isConfigured()) {
+                    vscode.window.showWarningMessage("AI features require a Google Gemini API Key. Please add one in settings.", "Open Settings").then(action => {
+                        if (action === "Open Settings") vscode.commands.executeCommand('workbench.action.openSettings', 'chronos.ai.apiKey');
+                    });
+                    return;
+                }
+                manager.generateChangelog();
+            }),
             vscode.commands.registerCommand('chronos.compareTwoSnapshots', compareTwoSnapshots),
             vscode.commands.registerCommand('chronos.compareTwoCommits', compareTwoCommits),
             vscode.commands.registerCommand('chronos.compareWithActive', compareWithActive),
@@ -262,6 +278,17 @@ export function activate(context: vscode.ExtensionContext) {
 }
 
 async function generateAICommitMessage() {
+    if (!aiService.isConfigured()) {
+        const action = await vscode.window.showWarningMessage(
+            "AI features require a Google Gemini API Key. Please add one in settings.",
+            "Open Settings"
+        );
+        if (action === "Open Settings") {
+            vscode.commands.executeCommand('workbench.action.openSettings', 'chronos.ai.apiKey');
+        }
+        return;
+    }
+
     vscode.window.withProgress({
         location: vscode.ProgressLocation.Notification,
         title: "Analyzing history for commit draft…",
@@ -308,9 +335,8 @@ async function openDiff(snapshot: Snapshot, baseFilePath: string, currentSelecti
     const timestamp = new Date(snapshot.timestamp).toLocaleString();
     const config = vscode.workspace.getConfiguration('chronos');
     const diffOptions = { 
-        viewColumn: vscode.ViewColumn.Beside, 
-        preview: true,
-        diffSideBySide: config.get<boolean>('showDiffSideBySide', true)
+        viewColumn: vscode.ViewColumn.Active, 
+        preview: true
     };
 
     if (!snapshot.relevantRange && !currentSelection) {
@@ -354,9 +380,8 @@ async function openDiffGit(commit: GitCommit, filePath: string) {
     const fileName = path.basename(filePath);
     const config = vscode.workspace.getConfiguration('chronos');
     const diffOptions = { 
-        viewColumn: vscode.ViewColumn.Beside, 
-        preview: true,
-        diffSideBySide: config.get<boolean>('showDiffSideBySide', true)
+        viewColumn: vscode.ViewColumn.Active, 
+        preview: true
     };
 
     try {
@@ -389,9 +414,8 @@ async function openDiffGitCurrent(commit: GitCommit, filePath: string, selection
 
     const config = vscode.workspace.getConfiguration('chronos');
     const diffOptions = { 
-        viewColumn: vscode.ViewColumn.Beside, 
-        preview: true,
-        diffSideBySide: config.get<boolean>('showDiffSideBySide', true)
+        viewColumn: vscode.ViewColumn.Active, 
+        preview: true
     };
 
     try {
@@ -534,7 +558,7 @@ async function showHistory(uri?: vscode.Uri, selection?: vscode.Range) {
     const clustered = manager.clusterSnapshots(history);
 
     if (vscode.workspace.getConfiguration('chronos').get('viewMode') === 'panel') {
-        panelProvider.showLocalHistory(clustered, uri.fsPath, selection);
+        panelProvider.showLocalHistory(clustered, uri.fsPath, selection, aiService.isConfigured());
         vscode.commands.executeCommand('chronos.historyPanel.focus');
     } else {
         viewProvider.show(
@@ -551,7 +575,8 @@ async function showHistory(uri?: vscode.Uri, selection?: vscode.Range) {
                 await manager.putLabel(name, '', undefined, filePath);
                 const updatedHistory = await storage.getHistoryForFile(vscode.Uri.file(filePath));
                 viewProvider.updateSnapshots(manager.clusterSnapshots(updatedHistory));
-            }
+            },
+            aiService.isConfigured()
         );
     }
 }
@@ -565,10 +590,10 @@ async function showHistoryForSelection() {
     try {
         const filtered = await historyFilter.filterHistoryForSelection(history, uri, editor.selection);
         if (vscode.workspace.getConfiguration('chronos').get('viewMode') === 'panel') {
-            panelProvider.showLocalHistory(filtered, uri.fsPath, editor.selection);
+            panelProvider.showLocalHistory(filtered, uri.fsPath, editor.selection, aiService.isConfigured());
             vscode.commands.executeCommand('chronos.historyPanel.focus');
         } else {
-            viewProvider.show(filtered, uri, (s: Snapshot) => getDiffForSnapshot(s, uri), editor.selection, (q: string, sc: boolean) => storage.search(q, sc), (s: Snapshot) => explainSnapshot(s, uri), (q: string) => manager.semanticSearch(q), (id: string) => manager.togglePin(id), (s1: Snapshot, s2: Snapshot) => compareSnapshots(s1, s2));
+            viewProvider.show(filtered, uri, (s: Snapshot) => getDiffForSnapshot(s, uri), editor.selection, (q: string, sc: boolean) => storage.search(q, sc), (s: Snapshot) => explainSnapshot(s, uri), (q: string) => manager.semanticSearch(q), (id: string) => manager.togglePin(id), (s1: Snapshot, s2: Snapshot) => compareSnapshots(s1, s2), undefined, aiService.isConfigured());
         }
     } catch (e) {}
 }
@@ -577,13 +602,13 @@ async function showProjectHistory() {
     await ensureStorage();
     const history = await storage.getProjectHistory();
     const clustered = manager.clusterSnapshots(history);
-    viewProvider.show(clustered, undefined, (s: Snapshot) => getDiffForSnapshot(s, undefined), undefined, (q: string, sc: boolean) => storage.search(q, sc), undefined, (q: string) => manager.semanticSearch(q), (id: string) => manager.togglePin(id), (s1: Snapshot, s2: Snapshot) => compareSnapshots(s1, s2));
+    viewProvider.show(clustered, undefined, (s: Snapshot) => getDiffForSnapshot(s, undefined), undefined, (q: string, sc: boolean) => storage.search(q, sc), undefined, (q: string) => manager.semanticSearch(q), (id: string) => manager.togglePin(id), (s1: Snapshot, s2: Snapshot) => compareSnapshots(s1, s2), undefined, aiService.isConfigured());
 }
 
 async function showRecentChanges() {
     await ensureStorage();
     const history = await storage.getProjectHistory();
-    viewProvider.show(history.slice(0, 20), undefined, (s: Snapshot) => getDiffForSnapshot(s, undefined), undefined, (q: string, sc: boolean) => storage.search(q, sc), undefined, (q: string) => manager.semanticSearch(q), (id: string) => manager.togglePin(id), (s1: Snapshot, s2: Snapshot) => compareSnapshots(s1, s2));
+    viewProvider.show(history.slice(0, 20), undefined, (s: Snapshot) => getDiffForSnapshot(s, undefined), undefined, (q: string, sc: boolean) => storage.search(q, sc), undefined, (q: string) => manager.semanticSearch(q), (id: string) => manager.togglePin(id), (s1: Snapshot, s2: Snapshot) => compareSnapshots(s1, s2), undefined, aiService.isConfigured());
 }
 
 async function showGraph() {
@@ -698,7 +723,7 @@ async function showGitHistory() {
         const commits = await gitService.getHistoryForFile(editor.document.uri.fsPath, { maxCommits: 100, followRenames: true, dateFormat: 'yyyy-MM-dd HH:mm' });
         if (commits.length > 0) {
             if (vscode.workspace.getConfiguration('chronos').get('viewMode') === 'panel') {
-                panelProvider.showGitHistory(commits, editor.document.uri.fsPath);
+                panelProvider.showGitHistory(commits, editor.document.uri.fsPath, undefined, aiService.isConfigured());
                 vscode.commands.executeCommand('chronos.historyPanel.focus');
             } else {
                 viewProvider.showGit(
@@ -706,7 +731,8 @@ async function showGitHistory() {
                     editor.document.uri.fsPath, 
                     undefined as any,
                     (c: GitCommit) => explainGitCommit(c),
-                    (h1: string, h2: string) => gitService.getCommitDiff(h1, h2, editor.document.uri.fsPath, 0, 0) // Placeholder range if needed
+                    (h1: string, h2: string) => gitService.getCommitDiff(h1, h2, editor.document.uri.fsPath, 0, 0), // Placeholder range if needed
+                    aiService.isConfigured()
                 );
             }
         }
@@ -724,7 +750,7 @@ async function gitHistoryForSelection() {
         const commits = await gitService.getHistoryForSelection(editor.document.uri.fsPath, selection.start.line, selection.end.line, { maxCommits: 100, followRenames: true, dateFormat: 'yyyy-MM-dd HH:mm' });
         if (commits.length > 0) {
             if (vscode.workspace.getConfiguration('chronos').get('viewMode') === 'panel') {
-                panelProvider.showGitHistory(commits, editor.document.uri.fsPath, { startLine: selection.start.line, endLine: selection.end.line });
+                panelProvider.showGitHistory(commits, editor.document.uri.fsPath, { startLine: selection.start.line, endLine: selection.end.line }, aiService.isConfigured());
                 vscode.commands.executeCommand('chronos.historyPanel.focus');
             } else {
                 viewProvider.showGit(
@@ -732,7 +758,8 @@ async function gitHistoryForSelection() {
                     editor.document.uri.fsPath, 
                     { startLine: selection.start.line, endLine: selection.end.line },
                     (c: GitCommit) => explainGitCommit(c),
-                    (h1: string, h2: string) => gitService.getCommitDiff(h1, h2, editor.document.uri.fsPath, selection.start.line, selection.end.line)
+                    (h1: string, h2: string) => gitService.getCommitDiff(h1, h2, editor.document.uri.fsPath, selection.start.line, selection.end.line),
+                    aiService.isConfigured()
                 );
             }
         }

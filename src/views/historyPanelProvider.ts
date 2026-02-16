@@ -100,18 +100,18 @@ export class HistoryPanelProvider implements vscode.WebviewViewProvider {
         webviewView.webview.html = this._getHtmlForWebview();
     }
 
-    public showLocalHistory(snapshots: any[], filePath: string, selection?: any) {
+    public showLocalHistory(snapshots: any[], filePath: string, selection?: any, aiConfigured: boolean = false) {
         this._currentMode = 'local';
-        this._pendingData = { command: 'loadLocal', snapshots, filePath, selection };
+        this._pendingData = { command: 'loadLocal', snapshots, filePath, selection, aiConfigured };
         if (this._view) {
             this._view.show?.(true); 
             this._view.webview.postMessage(this._pendingData);
         }
     }
 
-    public showGitHistory(commits: GitCommit[], filePath: string, selection?: any) {
+    public showGitHistory(commits: GitCommit[], filePath: string, selection?: any, aiConfigured: boolean = false) {
         this._currentMode = 'git';
-        this._pendingData = { command: 'loadGit', commits, filePath, selection };
+        this._pendingData = { command: 'loadGit', commits, filePath, selection, aiConfigured };
         if (this._view) {
             this._view.show?.(true);
             this._view.webview.postMessage(this._pendingData);
@@ -295,13 +295,14 @@ export class HistoryPanelProvider implements vscode.WebviewViewProvider {
             const style = `body { margin: 0; padding: 0; color: var(--vscode-editor-foreground); background-color: var(--vscode-editor-background); font-family: var(--vscode-font-family); height: 100vh; overflow: hidden; display: flex; flex-direction: ${containerFlex}; } .list { flex: 1; overflow-y: auto; } .entry { padding: 8px 12px; border-bottom: 1px solid var(--vscode-panel-border); cursor: pointer; display: flex; align-items: center; gap: 10px; } .entry:hover { background-color: var(--vscode-list-hoverBackground); } .header { display: flex; align-items: center; gap: 10px; flex: 1; min-width: 0; } .event-type { font-weight: bold; text-transform: uppercase; font-size: 0.8em; opacity: 0.8; min-width: 60px; } .time { font-family: monospace; opacity: 0.9; min-width: 110px; } .message { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-weight: 500; } .empty-state { padding: 20px; text-align: center; opacity: 0.5; } ${sharedStyle}`;
 
             const script = `(function() { const vscode = acquireVsCodeApi(); ${sharedScript}
+                let aiConfigured = false;
                 window.addEventListener("message", event => {
                     const msg = event.data;
                     if (msg.command === "showHtmlDiff") { renderDiff(msg.diff, msg.title, msg.params); return; }
                     const el = document.getElementById("list"); if (!el) return; el.innerHTML = "";
                     let items = [];
-                    if (msg.command === "loadLocal") { (msg.snapshots || []).forEach(s => { if (s.type === "cluster") items.push(...s.items); else items.push(s); }); }
-                    else if (msg.command === "loadGit") { items = msg.commits || []; }
+                    if (msg.command === "loadLocal") { aiConfigured = !!msg.aiConfigured; (msg.snapshots || []).forEach(s => { if (s.type === "cluster") items.push(...s.items); else items.push(s); }); }
+                    else if (msg.command === "loadGit") { aiConfigured = !!msg.aiConfigured; items = msg.commits || []; }
                     if (items.length === 0) { el.innerHTML = '<div class="empty-state">No history found.</div>'; return; }
                     items.forEach(item => {
                         const entry = document.createElement("div"); entry.className = "entry";
@@ -360,11 +361,13 @@ export class HistoryPanelProvider implements vscode.WebviewViewProvider {
         <script>
             (function() {
                 const vscode = acquireVsCodeApi(); ${sharedScript}
+                let aiConfigured = false;
                 window.addEventListener("message", event => {
                     const msg = event.data;
                     if (msg.command === "showHtmlDiff") { renderDiff(msg.diff, msg.title, msg.params); return; }
                     if (msg.command === "explainResult") { const box = document.getElementById('explanationBox'); box.style.display = 'block'; box.textContent = msg.text; document.getElementById('jbBtnExplain').textContent = '✨ Explain'; return; }
                     if (msg.command === "loadLocal" || msg.command === "loadGit") {
+                        aiConfigured = !!msg.aiConfigured;
                         const el = document.getElementById('list'); el.innerHTML = '';
                         let items = [];
                         if (msg.command === "loadLocal") { (msg.snapshots || []).forEach(s => { if (s.type === "cluster") items.push(...s.items); else items.push(s); }); }
@@ -400,14 +403,32 @@ export class HistoryPanelProvider implements vscode.WebviewViewProvider {
                         document.getElementById('jbBtnRestore').onclick = () => vscode.postMessage({ command: 'restore', snapshotId: item.id, filePath: item.filePath });
                         document.getElementById('jbBtnBranch').onclick = () => vscode.postMessage({ command: 'compareWithBranch', filePath: filePath, snapshot: item });
                         document.getElementById('jbBtnBranchVersion').onclick = () => vscode.postMessage({ command: 'compareWithBranchVersion', filePath: filePath, snapshot: item });
-                        document.getElementById('jbBtnExplain').onclick = () => { document.getElementById('jbBtnExplain').textContent = 'Thinking...'; vscode.postMessage({ command: 'explain', snapshot: item }); };
+                        
+                        if (!aiConfigured) {
+                            document.getElementById('jbBtnExplain').textContent = '✨ Explain (Key Required)';
+                            document.getElementById('jbBtnExplain').style.opacity = '0.5';
+                            document.getElementById('jbBtnExplain').onclick = () => { alert("Please add a Google Gemini API Key in extension settings to use AI features."); };
+                        } else {
+                            document.getElementById('jbBtnExplain').textContent = '✨ Explain';
+                            document.getElementById('jbBtnExplain').style.opacity = '1';
+                            document.getElementById('jbBtnExplain').onclick = () => { document.getElementById('jbBtnExplain').textContent = 'Thinking...'; vscode.postMessage({ command: 'explain', snapshot: item }); };
+                        }
                     } else {
                         document.getElementById('detTime').textContent = item.date;
                         document.getElementById('detType').textContent = item.hash.substring(0, 7);
                         document.getElementById('jbBtnRestore').style.display = 'none';
                         document.getElementById('jbBtnBranch').onclick = () => vscode.postMessage({ command: 'compareWithBranch', filePath: filePath, commit: item });
                         document.getElementById('jbBtnBranchVersion').onclick = () => vscode.postMessage({ command: 'compareWithBranchVersion', filePath: filePath, commit: item });
-                        document.getElementById('jbBtnExplain').onclick = () => { document.getElementById('jbBtnExplain').textContent = 'Thinking...'; vscode.postMessage({ command: 'explain', commit: item }); };
+                        
+                        if (!aiConfigured) {
+                            document.getElementById('jbBtnExplain').textContent = '✨ Explain (Key Required)';
+                            document.getElementById('jbBtnExplain').style.opacity = '0.5';
+                            document.getElementById('jbBtnExplain').onclick = () => { alert("Please add a Google Gemini API Key in extension settings to use AI features."); };
+                        } else {
+                            document.getElementById('jbBtnExplain').textContent = '✨ Explain';
+                            document.getElementById('jbBtnExplain').style.opacity = '1';
+                            document.getElementById('jbBtnExplain').onclick = () => { document.getElementById('jbBtnExplain').textContent = 'Thinking...'; vscode.postMessage({ command: 'explain', commit: item }); };
+                        }
                     }
                 }
                 vscode.postMessage({ command: "ready" });

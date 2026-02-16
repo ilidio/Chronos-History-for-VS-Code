@@ -87,7 +87,7 @@ export class HistoryViewProvider {
         `;
     }
 
-    public show(snapshots: any[], currentFileUri: vscode.Uri | undefined, getDiff?: any, selection?: vscode.Range, onSearch?: any, onExplain?: any, onSemanticSearch?: any, onTogglePin?: any, onCompareSnapshots?: any, onPutLabel?: (name: string, filePath: string) => void) {
+    public show(snapshots: any[], currentFileUri: vscode.Uri | undefined, getDiff?: any, selection?: vscode.Range, onSearch?: any, onExplain?: any, onSemanticSearch?: any, onTogglePin?: any, onCompareSnapshots?: any, onPutLabel?: (name: string, filePath: string) => void, aiConfigured: boolean = false) {
         const config = vscode.workspace.getConfiguration('chronos');
         const useJetBrains = config.get('ui.useJetBrainsStyle', true);
         const enableHtmlPreview = config.get('diff.enableHtmlPreview', true);
@@ -108,7 +108,7 @@ export class HistoryViewProvider {
             switch (message.command) {
                 case 'ready':
                     panel.webview.postMessage({ command: 'readyConfig', htmlLayout, htmlPosition, isSyncScroll });
-                    panel.webview.postMessage({ command: 'loadHistory', snapshots, selection: selection ? { startLine: selection.start.line, endLine: selection.end.line } : null, filePath: currentFileUri ? currentFileUri.fsPath : '', explainEnabled: !!onExplain, enableHtmlPreview });
+                    panel.webview.postMessage({ command: 'loadHistory', snapshots, selection: selection ? { startLine: selection.start.line, endLine: selection.end.line } : null, filePath: currentFileUri ? currentFileUri.fsPath : '', explainEnabled: !!onExplain, aiConfigured, enableHtmlPreview });
                     return;
                 case 'openDiff': 
                     if (enableHtmlPreview && getDiff) {
@@ -158,7 +158,7 @@ export class HistoryViewProvider {
         }
     }
 
-    public showGit(commits: GitCommit[], filePath: string, selection: {startLine: number, endLine: number}, onExplain?: (c: GitCommit) => Promise<string>, onCompare?: (h1: string, h2: string) => Promise<string>) {
+    public showGit(commits: GitCommit[], filePath: string, selection: {startLine: number, endLine: number}, onExplain?: (c: GitCommit) => Promise<string>, onCompare?: (h1: string, h2: string) => Promise<string>, aiConfigured: boolean = false) {
         const config = vscode.workspace.getConfiguration('chronos');
         const useJetBrains = config.get('ui.useJetBrainsStyle', true);
         const enableHtmlPreview = config.get('diff.enableHtmlPreview', true);
@@ -179,7 +179,7 @@ export class HistoryViewProvider {
             switch (message.command) {
                 case 'ready':
                     panel.webview.postMessage({ command: 'readyConfig', htmlLayout, htmlPosition, isSyncScroll });
-                    panel.webview.postMessage({ command: 'loadCommits', commits, filePath, selection, explainEnabled: !!onExplain, enableHtmlPreview });
+                    panel.webview.postMessage({ command: 'loadCommits', commits, filePath, selection, explainEnabled: !!onExplain, aiConfigured, enableHtmlPreview });
                     return;
                 case 'openDiff':
                     if (enableHtmlPreview && onCompare && !message.compareWithCurrent) {
@@ -352,13 +352,13 @@ export class HistoryViewProvider {
 
         if (!useJetBrains) {
             const script = `(function() { const vscode = acquireVsCodeApi(); ${sharedScript} 
-                let snapshots = [], currentSelection = null, baseFilePath = '', explainEnabled = false;
+                let snapshots = [], currentSelection = null, baseFilePath = '', explainEnabled = false, aiConfigured = false;
                 window.onload = () => { vscode.postMessage({ command: 'ready' }); updateLayoutButtons(); };
                 window.addEventListener('message', event => {
                     const msg = event.data;
                     if (msg.command === 'loadHistory') {
                         const el = document.getElementById('list'); el.innerHTML = '';
-                        snapshots = msg.snapshots || []; baseFilePath = msg.filePath; currentSelection = msg.selection; explainEnabled = !!msg.explainEnabled;
+                        snapshots = msg.snapshots || []; baseFilePath = msg.filePath; currentSelection = msg.selection; explainEnabled = !!msg.explainEnabled; aiConfigured = !!msg.aiConfigured;
                         snapshots.forEach((s, i) => {
                             if (s.type === 'cluster') {
                                 const container = document.createElement('div'); container.className = 'cluster-container';
@@ -397,7 +397,15 @@ export class HistoryViewProvider {
                     document.getElementById('btnLabel').onclick = () => { const name = prompt("Enter label:"); if (name) vscode.postMessage({ command: 'putLabel', name, filePath: baseFilePath }); };
                     if (explainEnabled) {
                         document.getElementById('btnExplain').style.display = 'block';
-                        document.getElementById('btnExplain').onclick = () => { document.getElementById('btnExplain').textContent = 'Thinking...'; vscode.postMessage({ command: 'explain', snapshot: s }); };
+                        if (!aiConfigured) {
+                            document.getElementById('btnExplain').textContent = '✨ Explain (Key Required)';
+                            document.getElementById('btnExplain').style.opacity = '0.5';
+                            document.getElementById('btnExplain').onclick = () => { alert("Please add a Google Gemini API Key in extension settings to use AI features."); };
+                        } else {
+                            document.getElementById('btnExplain').textContent = '✨ Explain';
+                            document.getElementById('btnExplain').style.opacity = '1';
+                            document.getElementById('btnExplain').onclick = () => { document.getElementById('btnExplain').textContent = 'Thinking...'; vscode.postMessage({ command: 'explain', snapshot: s }); };
+                        }
                     } else document.getElementById('btnExplain').style.display = 'none';
                 }
             })();`;
@@ -405,13 +413,13 @@ export class HistoryViewProvider {
         }
 
         const jbScript = `(function() { const vscode = acquireVsCodeApi(); ${sharedScript}
-            let baseFilePath = '', explainEnabled = false;
+            let baseFilePath = '', explainEnabled = false, aiConfigured = false;
             window.onload = () => { vscode.postMessage({ command: 'ready' }); updateLayoutButtons(); };
             window.addEventListener('message', event => {
                 const msg = event.data;
                 if (msg.command === 'loadHistory') {
                     const el = document.getElementById('list'); el.innerHTML = '';
-                    baseFilePath = msg.filePath; explainEnabled = !!msg.explainEnabled;
+                    baseFilePath = msg.filePath; explainEnabled = !!msg.explainEnabled; aiConfigured = !!msg.aiConfigured;
                     const items = []; (msg.snapshots || []).forEach(s => { if (s.type === 'cluster') items.push(...s.items); else items.push(s); });
                     items.forEach(s => {
                         const tr = document.createElement('tr'); tr.className = 'jb-tr';
@@ -441,7 +449,15 @@ export class HistoryViewProvider {
                 document.getElementById('jbBtnBranchVersion').onclick = () => vscode.postMessage({ command: 'compareWithBranchVersion', filePath: baseFilePath, snapshot: s });
                 if (explainEnabled) {
                     document.getElementById('jbBtnExplain').style.display = 'block';
-                    document.getElementById('jbBtnExplain').onclick = () => { document.getElementById('jbBtnExplain').textContent = 'Thinking...'; vscode.postMessage({ command: 'explain', snapshot: s }); };
+                    if (!aiConfigured) {
+                        document.getElementById('jbBtnExplain').textContent = '✨ Explain (Key Required)';
+                        document.getElementById('jbBtnExplain').style.opacity = '0.5';
+                        document.getElementById('jbBtnExplain').onclick = () => { alert("Please add a Google Gemini API Key in extension settings to use AI features."); };
+                    } else {
+                        document.getElementById('jbBtnExplain').textContent = '✨ Explain';
+                        document.getElementById('jbBtnExplain').style.opacity = '1';
+                        document.getElementById('jbBtnExplain').onclick = () => { document.getElementById('jbBtnExplain').textContent = 'Thinking...'; vscode.postMessage({ command: 'explain', snapshot: s }); };
+                    }
                 } else document.getElementById('jbBtnExplain').style.display = 'none';
             }
         })();`;
@@ -456,11 +472,13 @@ export class HistoryViewProvider {
 
         const script = `(function() { const vscode = acquireVsCodeApi(); 
             ${this._getGitSharedScript(htmlLayout, isSyncScroll)}
+            let aiConfigured = false;
             window.onload = () => { vscode.postMessage({ command: 'ready' }); updateLayoutButtons(); };
             window.addEventListener('message', event => {
                 const msg = event.data;
                 if (msg.command === 'loadCommits') {
                     const el = document.getElementById('list'); el.innerHTML = '';
+                    aiConfigured = !!msg.aiConfigured;
                     (msg.commits || []).forEach(c => {
                         const div = document.createElement('div'); div.className = 'entry';
                         div.onclick = () => {
@@ -482,7 +500,16 @@ export class HistoryViewProvider {
                 document.getElementById('detailsHeader').style.display = 'block';
                 document.getElementById('btnBranch').onclick = () => vscode.postMessage({ command: 'compareWithBranch', filePath: filePath, commit: c });
                 document.getElementById('btnBranchVersion').onclick = () => vscode.postMessage({ command: 'compareWithBranchVersion', filePath: filePath, commit: c });
-                document.getElementById('btnExplain').onclick = () => { document.getElementById('btnExplain').textContent = 'Thinking...'; vscode.postMessage({ command: 'explain', commit: c }); };
+                
+                if (!aiConfigured) {
+                    document.getElementById('btnExplain').textContent = '✨ Explain (Key Required)';
+                    document.getElementById('btnExplain').style.opacity = '0.5';
+                    document.getElementById('btnExplain').onclick = () => { alert("Please add a Google Gemini API Key in extension settings to use AI features."); };
+                } else {
+                    document.getElementById('btnExplain').textContent = '✨ Explain';
+                    document.getElementById('btnExplain').style.opacity = '1';
+                    document.getElementById('btnExplain').onclick = () => { document.getElementById('btnExplain').textContent = 'Thinking...'; vscode.postMessage({ command: 'explain', commit: c }); };
+                }
             }
         })();`;
         return `<!DOCTYPE html><html><head><meta charset="UTF-8"><style>body { margin: 0; display: flex; flex-direction: ${containerFlex}; height: 100vh; font-family: var(--vscode-font-family); color: var(--vscode-foreground); } .sidebar { flex: 1; overflow-y: auto; background: var(--vscode-sideBar-background); } .entry { padding: 8px; border-bottom: 1px solid var(--vscode-panel-border); cursor: pointer; } .entry:hover { background: var(--vscode-list-hoverBackground); } .entry.selected { background: var(--vscode-list-activeSelectionBackground); } ${styles}</style></head><body><div id="diffContainer" class="diff-container" style="order: ${diffOrder}; flex: 1; min-height: 200px;">
