@@ -304,18 +304,20 @@ export class HistoryStorage {
         return false;
     }
 
-    async prune(maxDays: number): Promise<void> {
-        if (maxDays <= 0) return;
+    async prune(maxDays: number, maxSizeMB: number = 500): Promise<void> {
+        if (maxDays <= 0 && maxSizeMB <= 0) return;
         await this.init();
         await this.refreshIndices();
 
         const cutoff = Date.now() - (maxDays * 24 * 60 * 60 * 1000);
+        const maxSizeBytes = maxSizeMB * 1024 * 1024;
 
         for (const [key, { index, root }] of this.indices) {
             const originalCount = index.snapshots.length;
             const toKeep: Snapshot[] = [];
             const toDelete: Snapshot[] = [];
 
+            // 1. Prune by date first
             for (const s of index.snapshots) {
                 if (s.pinned || s.timestamp > cutoff) {
                     toKeep.push(s);
@@ -324,7 +326,46 @@ export class HistoryStorage {
                 }
             }
 
-            if (toKeep.length !== originalCount) {
+            // 2. Prune by size if needed (oldest first)
+            if (maxSizeBytes > 0) {
+                // Sort toKeep by timestamp ascending (oldest first)
+                toKeep.sort((a, b) => a.timestamp - b.timestamp);
+                
+                let currentTotalSize = 0;
+                // Calculate total size of all blobs in this index
+                const sizeMap = new Map<string, number>();
+                for (const s of toKeep) {
+                    if (s.storagePath) {
+                        try {
+                            const blobUri = vscode.Uri.joinPath(root, s.storagePath);
+                            const stat = await vscode.workspace.fs.stat(blobUri);
+                            sizeMap.set(s.id, stat.size);
+                            currentTotalSize += stat.size;
+                        } catch (e) {
+                            sizeMap.set(s.id, 0);
+                        }
+                    }
+                }
+
+                // Remove oldest until size is within limit
+                while (currentTotalSize > maxSizeBytes && toKeep.length > 0) {
+                    const oldest = toKeep.shift();
+                    if (oldest && !oldest.pinned) {
+                        toDelete.push(oldest);
+                        currentTotalSize -= sizeMap.get(oldest.id) || 0;
+                    } else if (oldest && oldest.pinned) {
+                        // If it's pinned, we keep it but it doesn't count towards pruning limit? 
+                        // Actually, if we hit here, we should probably stop or skip it.
+                        // For simplicity, pinned snapshots are never pruned even if they exceed size limit.
+                        continue; 
+                    }
+                }
+                
+                // Re-sort back to descending for the index
+                toKeep.sort((a, b) => b.timestamp - a.timestamp);
+            }
+
+            if (toDelete.length > 0) {
                 for (const s of toDelete) {
                     if (s.storagePath) {
                         try {

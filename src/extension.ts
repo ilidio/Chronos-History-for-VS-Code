@@ -230,7 +230,9 @@ export function activate(context: vscode.ExtensionContext) {
             vscode.commands.registerCommand('chronos.exportHistory', exportHistory),
             vscode.commands.registerCommand('chronos.importHistory', importHistory),
             vscode.commands.registerCommand('chronos.shareSnapshot', shareSnapshot),
-            vscode.commands.registerCommand('chronos.importShared', importHistory)
+            vscode.commands.registerCommand('chronos.importShared', importHistory),
+            vscode.commands.registerCommand('chronos.explainSnapshot', (s) => explainSnapshot(s)),
+            vscode.commands.registerCommand('chronos.explainCommit', (c) => explainGitCommit(c))
         );
 
         // Refresh views when files change
@@ -246,7 +248,11 @@ export function activate(context: vscode.ExtensionContext) {
             vscode.workspace.onDidSaveTextDocument(() => activityProvider.refresh())
         );
 
-        storage.init().catch(err => {
+        storage.init().then(() => {
+            if (vscode.workspace.getConfiguration('chronos').get('ai.dailyBriefing', true)) {
+                manager.showDailyBriefing();
+            }
+        }).catch(err => {
             outputChannel.appendLine('Storage init failed: ' + err);
         });
     } catch (e) {
@@ -300,12 +306,18 @@ async function openDiff(snapshot: Snapshot, baseFilePath: string, currentSelecti
     const fileName = path.basename(fileUri.fsPath);
     const ext = path.extname(fileUri.fsPath) || '.txt';
     const timestamp = new Date(snapshot.timestamp).toLocaleString();
+    const config = vscode.workspace.getConfiguration('chronos');
+    const diffOptions = { 
+        viewColumn: vscode.ViewColumn.Beside, 
+        preview: true,
+        diffSideBySide: config.get<boolean>('showDiffSideBySide', true)
+    };
 
     if (!snapshot.relevantRange && !currentSelection) {
          try {
             const snapshotUri = await storage.getSnapshotUri(snapshot, fileUri);
             const title = `${fileName} (${timestamp}) ↔ ${fileName} (Current)`;
-            await vscode.commands.executeCommand('vscode.diff', snapshotUri, fileUri, title, { viewColumn: vscode.ViewColumn.Beside, preview: true });
+            await vscode.commands.executeCommand('vscode.diff', snapshotUri, fileUri, title, diffOptions);
         } catch (e) {}
         return;
     }
@@ -322,7 +334,7 @@ async function openDiff(snapshot: Snapshot, baseFilePath: string, currentSelecti
         if (!snapRange || !currRange) {
              const snapshotUri = await storage.getSnapshotUri(snapshot, fileUri);
              const title = `${fileName} (${timestamp}) ↔ ${fileName} (Current)`;
-             await vscode.commands.executeCommand('vscode.diff', snapshotUri, fileUri, title);
+             await vscode.commands.executeCommand('vscode.diff', snapshotUri, fileUri, title, diffOptions);
              return;
         }
 
@@ -332,7 +344,7 @@ async function openDiff(snapshot: Snapshot, baseFilePath: string, currentSelecti
         const currTemp = await createTempFile(`current_selection${ext}`, currLines);
         
         const title = `${fileName} (${timestamp}) ↔ ${fileName} (Current)`;
-        await vscode.commands.executeCommand('vscode.diff', snapTemp, currTemp, title, { viewColumn: vscode.ViewColumn.Beside, preview: true });
+        await vscode.commands.executeCommand('vscode.diff', snapTemp, currTemp, title, diffOptions);
     } catch (e) {}
 }
 
@@ -340,6 +352,13 @@ async function openDiffGit(commit: GitCommit, filePath: string) {
     if (!commit || !commit.diff) return;
     const ext = path.extname(filePath) || '.txt';
     const fileName = path.basename(filePath);
+    const config = vscode.workspace.getConfiguration('chronos');
+    const diffOptions = { 
+        viewColumn: vscode.ViewColumn.Beside, 
+        preview: true,
+        diffSideBySide: config.get<boolean>('showDiffSideBySide', true)
+    };
+
     try {
         const lines = commit.diff.split('\n');
         let leftContent = '', rightContent = '';
@@ -357,7 +376,7 @@ async function openDiffGit(commit: GitCommit, filePath: string) {
         const rightTemp = await createTempFile(`git_${commit.hash.substring(0,7)}_after${ext}`, rightContent);
         
         const title = `${fileName} (Parent) ↔ ${fileName} (${commit.hash.substring(0, 7)})`;
-        await vscode.commands.executeCommand('vscode.diff', leftTemp, rightTemp, title, { viewColumn: vscode.ViewColumn.Beside, preview: true });
+        await vscode.commands.executeCommand('vscode.diff', leftTemp, rightTemp, title, diffOptions);
     } catch (e) {}
 }
 
@@ -367,6 +386,13 @@ async function openDiffGitCurrent(commit: GitCommit, filePath: string, selection
     const fileName = path.basename(filePath);
     const workspaceFolder = vscode.workspace.getWorkspaceFolder(vscode.Uri.file(filePath));
     if (!workspaceFolder) return;
+
+    const config = vscode.workspace.getConfiguration('chronos');
+    const diffOptions = { 
+        viewColumn: vscode.ViewColumn.Beside, 
+        preview: true,
+        diffSideBySide: config.get<boolean>('showDiffSideBySide', true)
+    };
 
     try {
         // 1. Get historical version content
@@ -392,9 +418,9 @@ async function openDiffGitCurrent(commit: GitCommit, filePath: string, selection
         
         if (selection) {
             const rightTemp = await createTempFile(`current_selection${ext}`, currLines);
-            await vscode.commands.executeCommand('vscode.diff', leftTemp, rightTemp, title, { viewColumn: vscode.ViewColumn.Beside, preview: true });
+            await vscode.commands.executeCommand('vscode.diff', leftTemp, rightTemp, title, diffOptions);
         } else {
-            await vscode.commands.executeCommand('vscode.diff', leftTemp, vscode.Uri.file(filePath), title, { viewColumn: vscode.ViewColumn.Beside, preview: true });
+            await vscode.commands.executeCommand('vscode.diff', leftTemp, vscode.Uri.file(filePath), title, diffOptions);
         }
     } catch (e) {
         vscode.window.showErrorMessage('Failed to open diff with current: ' + e);

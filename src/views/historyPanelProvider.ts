@@ -185,6 +185,14 @@ export class HistoryPanelProvider implements vscode.WebviewViewProvider {
                     btn.classList.toggle('active', isSyncScroll);
                     btn.onclick = () => { isSyncScroll = !isSyncScroll; updateLayoutButtons(); vscode.postMessage({ command: 'updateSync', sync: isSyncScroll }); };
                 });
+                const nativeBtns = document.querySelectorAll('.btn-open-native');
+                nativeBtns.forEach(btn => {
+                    btn.onclick = () => { if (lastCompareParams) vscode.postMessage({ command: 'openNativeDiff', params: lastCompareParams }); };
+                });
+                const savePatchBtns = document.querySelectorAll('.btn-save-patch');
+                savePatchBtns.forEach(btn => {
+                    btn.onclick = () => { if (lastDiffText) vscode.postMessage({ command: 'savePatch', diffText: lastDiffText }); };
+                });
             }
 
             function renderDiff(diffText, title, params) {
@@ -199,13 +207,13 @@ export class HistoryPanelProvider implements vscode.WebviewViewProvider {
                 if (infoBar) {
                     infoBar.style.display = 'flex';
                     if (params) {
-                        infoTag.textContent = params.type === 'snapshot' ? 'SNAPSHOT' : 'COMMIT ' + (params.commit ? params.commit.hash.substring(0,7) : '');
-                        infoPath.textContent = params.baseFilePath || params.filePath || '';
+                        if (infoTag) infoTag.textContent = params.type === 'snapshot' ? 'SNAPSHOT' : 'COMMIT ' + (params.commit ? params.commit.hash.substring(0,7) : 'DIFF');
+                        if (infoPath) infoPath.textContent = params.baseFilePath || params.filePath || '';
                     }
                 }
 
                 if (!diffText || diffText.trim() === '') {
-                    content.innerHTML = '<div style="padding: 10px; opacity: 0.5;">No differences found.</div>';
+                    content.innerHTML = '<div style="padding: 20px; opacity: 0.5;">No differences found.</div>';
                     if (infoBar) infoBar.style.display = 'none';
                     return;
                 }
@@ -248,7 +256,9 @@ export class HistoryPanelProvider implements vscode.WebviewViewProvider {
                             rightHtml += '<div class="diff-line"><div class="diff-line-num">' + rightLine + '</div><div class="diff-line-content">' + escapeHtml(text) + '</div></div>';
                         }
                     });
-                    content.innerHTML = '<div class="diff-sbs-wrapper"><div class="diff-sbs-side" id="diffLeft">' + leftHtml + '</div><div class="diff-sbs-side" id="diffRight">' + rightHtml + '</div></div>';
+                    let leftHeader = '<div class="diff-sbs-title">Original</div>';
+                    let rightHeader = '<div class="diff-sbs-title">Modified</div>';
+                    content.innerHTML = '<div class="diff-sbs-wrapper"><div class="diff-sbs-side" id="diffLeft">' + leftHeader + leftHtml + '</div><div class="diff-sbs-side" id="diffRight">' + rightHeader + rightHtml + '</div></div>';
                     const l = document.getElementById('diffLeft'), r = document.getElementById('diffRight');
                     if (l && r) {
                         l.onscroll = () => { if (!isSyncScroll) return; r.scrollTop = l.scrollTop; r.scrollLeft = l.scrollLeft; };
@@ -272,10 +282,10 @@ export class HistoryPanelProvider implements vscode.WebviewViewProvider {
                         <button class="btn-action btn-sbs" title="Side-by-Side View">◫</button>
                         <button class="btn-action btn-unified" title="Unified View">☰</button>
                     </div>
-                    <button class="btn-action btn-toggle-sync" style="padding: 2px 4px; font-size: 0.75em;"></button>
-                    <button class="btn-action btn-save-patch" title="Save Patch" style="padding: 2px 4px; font-size: 0.75em;">Save</button>
-                    <button class="btn-action btn-open-native" title="Open in VS Code" style="padding: 2px 4px; font-size: 0.75em;">↗</button>
-                    <button onclick="closeDiff()" class="btn-action" style="padding: 2px 4px; background: transparent; color: var(--vscode-foreground); min-width: 24px;">✕</button>
+                    <button class="btn-action btn-toggle-sync" style="padding: 2px 4px; font-size: 0.75em; height: 28px;"></button>
+                    <button class="btn-action btn-save-patch" title="Save Patch" style="padding: 2px 4px; font-size: 0.75em; height: 28px;">Save</button>
+                    <button class="btn-action btn-open-native" title="Open in VS Code" style="padding: 2px 4px; font-size: 0.75em; height: 28px;">Open in Editor ↗</button>
+                    <button onclick="closeDiff()" class="btn-action" style="padding: 2px 4px; background: transparent; color: var(--vscode-foreground); min-width: 24px; height: 28px;">✕</button>
                 </div>
             </div>
             <div id="diffInfoBar" class="diff-info-bar" style="display: none;"><span id="diffInfoTag" class="diff-info-tag"></span><span id="diffInfoPath" class="diff-info-path"></span></div>
@@ -324,7 +334,7 @@ export class HistoryPanelProvider implements vscode.WebviewViewProvider {
             .jb-tr.selected { background-color: var(--vscode-list-activeSelectionBackground); color: var(--vscode-list-activeSelectionForeground); }
             .jb-td { padding: 4px 8px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: 0.85em; }
             .col-time { width: 85px; } .col-type { width: 80px; }
-            .jb-btn { background: var(--vscode-button-background); color: var(--vscode-button-foreground); border: none; padding: 4px 8px; cursor: pointer; border-radius: 2px; font-size: 0.85em; width: 100%; text-align: center; }
+            .jb-btn { background: var(--vscode-button-background); color: var(--vscode-button-foreground); border: none; padding: 0 8px; height: 28px; cursor: pointer; border-radius: 2px; font-size: 0.85em; width: 100%; text-align: center; display: flex; align-items: center; justify-content: center; }
             .jb-label { font-size: 0.75em; opacity: 0.7; }
             .jb-value { font-size: 0.85em; font-weight: bold; margin-bottom: 4px; word-break: break-all; }
             .empty-state { padding: 20px; text-align: center; opacity: 0.5; font-style: italic; }
@@ -343,7 +353,7 @@ export class HistoryPanelProvider implements vscode.WebviewViewProvider {
                     <button id="jbBtnRestore" class="jb-btn">Restore</button>
                     <button id="jbBtnBranch" class="jb-btn" style="margin-top: 4px;">Compare Branch...</button>
                     <button id="jbBtnBranchVersion" class="jb-btn" style="margin-top: 4px;">Compare Version...</button>
-                    <button id="jbBtnExplain" class="jb-btn" style="margin-top: 4px; background: var(--vscode-button-secondaryBackground);">✨ Explain</button>
+                    <button id="jbBtnExplain" class="jb-btn" style="margin-top: 4px;">✨ Explain</button>
                     <div id="explanationBox" style="margin-top: 8px; font-size: 0.85em; white-space: pre-wrap; display: none;"></div>
                 </div>
             </div>

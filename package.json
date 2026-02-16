@@ -113,8 +113,8 @@
         },
         "chronos.ai.model": {
           "type": "string",
-          "default": "gemini-2.0-flash",
-          "description": "Gemini Model ID to use (e.g., gemini-2.0-flash, gemini-1.5-pro)."
+          "default": "models/gemini-3-flash-preview",
+          "description": "Gemini Model ID to use (e.g., gemini-3-flash-preview, gemini-2.0-flash)."
         },
         "chronos.ai.smartSummaries": {
           "type": "boolean",

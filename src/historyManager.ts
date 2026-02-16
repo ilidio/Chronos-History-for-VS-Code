@@ -13,6 +13,7 @@ export class HistoryManager {
     private activeExperiment: { name: string, snapshotId: string, filePath: string } | null = null;
     private aiService: AIService;
     private gitService: GitService;
+    private selectionTimeout: NodeJS.Timeout | null = null;
 
     constructor(context: vscode.ExtensionContext, storage: HistoryStorage, gitService: GitService) {
         this.storage = storage;
@@ -51,14 +52,33 @@ export class HistoryManager {
             vscode.workspace.onDidSaveTextDocument(this.onSave, this),
             vscode.workspace.onDidOpenTextDocument(this.onOpen, this),
             vscode.workspace.onDidRenameFiles(this.onRename, this),
-            vscode.workspace.onDidDeleteFiles(this.onDelete, this)
+            vscode.workspace.onDidDeleteFiles(this.onDelete, this),
+            vscode.window.onDidChangeTextEditorSelection(this.onSelectionChange, this)
         );
 
         setTimeout(() => {
             vscode.workspace.textDocuments.forEach(doc => this.onOpen(doc));
             // Maintenance
-            this.storage.prune(this.config.maxDays).catch(err => console.error('Pruning failed:', err));
+            this.storage.prune(this.config.maxDays, this.config.maxSizeMB).catch(err => console.error('Pruning failed:', err));
         }, 1000);
+    }
+
+    private onSelectionChange(e: vscode.TextEditorSelectionChangeEvent) {
+        if (!this.config.trackSelectionHistory || e.selections.length === 0 || e.selections[0].isEmpty) return;
+        
+        if (this.selectionTimeout) clearTimeout(this.selectionTimeout);
+        
+        this.selectionTimeout = setTimeout(async () => {
+            const doc = e.textEditor.document;
+            const relativePath = vscode.workspace.asRelativePath(doc.uri, false);
+            if (this.isExcluded(relativePath)) return;
+
+            const selection = e.selections[0];
+            const text = doc.getText(selection);
+            if (text.length < 10) return; // Ignore very small selections
+
+            await this.storage.saveSnapshot(doc, 'selection', `Selection: ${text.substring(0, 30)}...`);
+        }, 5000); // 5 second debounce for selections
     }
     
     public async togglePin(snapshotId: string): Promise<boolean> {
@@ -66,7 +86,7 @@ export class HistoryManager {
     }
 
     public async showDailyBriefing() {
-        if (!this.aiService.isEnabled('smartSummaries')) return;
+        if (!this.aiService.isEnabled('dailyBriefing')) return;
 
         const history = await this.storage.getProjectHistory();
         if (history.length === 0) return;
@@ -176,6 +196,10 @@ export class HistoryManager {
     }
     
     public async startExperiment(name: string) {
+        if (!vscode.workspace.getConfiguration('chronos').get('experiments', true)) {
+            vscode.window.showWarningMessage('Experiments feature is disabled in settings.');
+            return;
+        }
         const editor = vscode.window.activeTextEditor;
         if (!editor) {
             vscode.window.showErrorMessage('Open a file to start an experiment.');
@@ -358,12 +382,15 @@ export class HistoryManager {
         
         const result = await this.aiService.semanticSearch(query, JSON.stringify(data));
         try {
-            const match = result.match(/.*\[.*\].*/s); 
+            // More robust extraction of JSON array
+            const match = result.match(/\[[\s\S]*\]/); 
             if (match) {
                 const ids = JSON.parse(match[0]);
                 return snapshots.filter(s => ids.includes(s.id));
             }
-        } catch (e) {}
+        } catch (e) {
+            console.error('[HistoryManager] Semantic search parse failed:', e);
+        }
         return [];
     }
 

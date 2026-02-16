@@ -37,15 +37,26 @@ export class HistoryViewProvider {
                 white-space: nowrap;
             }
             .actions button:hover, .jb-btn:hover { background: var(--vscode-button-hoverBackground); }
-            .btn-explain { background-color: var(--vscode-button-secondaryBackground) !important; color: var(--vscode-button-secondaryForeground) !important; }
             
             .explanation-box { margin-top: 10px; padding: 12px; background-color: var(--vscode-editor-lineHighlightBackground); border-radius: 4px; font-size: 0.9em; display: none; white-space: pre-wrap; position: relative; }
             .explanation-close { position: absolute; top: 4px; right: 8px; cursor: pointer; opacity: 0.6; font-weight: bold; }
             
             .diff-container { display: none; flex: 1; flex-direction: column; overflow: hidden; background: var(--vscode-editor-background); }
-            .diff-header { padding: 8px 12px; background: var(--vscode-sideBar-background); border-bottom: 1px solid var(--vscode-panel-border); font-size: 0.9em; font-weight: bold; display: flex; justify-content: space-between; align-items: center; }
+            .diff-header { padding: 4px 8px; background: var(--vscode-sideBar-background); border-bottom: 1px solid var(--vscode-panel-border); font-size: 0.85em; font-weight: bold; display: flex; justify-content: space-between; align-items: center; }
             #diffTitle { color: var(--vscode-textLink-foreground); letter-spacing: 0.5px; text-transform: uppercase; font-size: 0.85em; }
-            .diff-content { flex: 1; overflow: auto; padding: 0; font-family: var(--vscode-editor-font-family); font-size: var(--vscode-editor-font-size); line-height: 1.4; position: relative; }
+            .diff-content { flex: 1; overflow: auto; padding: 0; font-family: var(--vscode-editor-font-family); font-size: 0.9em; line-height: 1.4; position: relative; }
+            .diff-sbs-wrapper { display: flex; width: 100%; height: 100%; overflow: hidden; }
+            .diff-sbs-side { flex: 1; overflow: auto; display: flex; flex-direction: column; border-right: 1px solid var(--vscode-panel-border); }
+            .diff-sbs-side:last-child { border-right: none; }
+            .diff-sbs-title { padding: 2px 8px; font-size: 0.75em; opacity: 0.6; background: var(--vscode-editor-lineHighlightBackground); border-bottom: 1px solid var(--vscode-panel-border); position: sticky; top: 0; z-index: 5; }
+            .diff-table { width: 100%; border-collapse: collapse; white-space: pre; table-layout: fixed; }
+            .diff-line { display: flex; width: 100%; min-height: 1.4em; }
+            .diff-line-num { width: 35px; min-width: 35px; text-align: right; padding-right: 5px; opacity: 0.4; user-select: none; border-right: 1px solid var(--vscode-panel-border); font-size: 0.75em; }
+            .diff-line-content { flex: 1; padding-left: 5px; overflow-x: auto; white-space: pre; }
+            .diff-line.added { background-color: var(--vscode-diffEditor-insertedTextBackground); }
+            .diff-line.removed { background-color: var(--vscode-diffEditor-removedTextBackground); }
+            .diff-line.empty { background-color: var(--vscode-editor-background); opacity: 0.3; }
+            .diff-line.header { background-color: var(--vscode-editor-lineHighlightBackground); font-weight: bold; opacity: 0.8; font-size: 0.85em; }
             
             .btn-action { 
                 background: var(--vscode-button-background); 
@@ -257,11 +268,13 @@ export class HistoryViewProvider {
                 if (document.getElementById('diffTitle')) document.getElementById('diffTitle').textContent = title;
                 
                 const infoBar = document.getElementById('diffInfoBar');
+                const infoTag = document.getElementById('diffInfoTag');
+                const infoPath = document.getElementById('diffInfoPath');
                 if (infoBar) {
                     infoBar.style.display = 'flex';
                     if (params) {
-                        const tag = document.getElementById('diffInfoTag'); if (tag) tag.textContent = params.type === 'snapshot' ? 'SNAPSHOT' : 'DIFF';
-                        const path = document.getElementById('diffInfoPath'); if (path) path.textContent = params.baseFilePath || '';
+                        if (infoTag) infoTag.textContent = params.type === 'snapshot' ? 'SNAPSHOT' : 'COMMIT ' + (params.commit ? params.commit.hash.substring(0,7) : 'DIFF');
+                        if (infoPath) infoPath.textContent = params.baseFilePath || params.filePath || '';
                     }
                 }
 
@@ -309,7 +322,9 @@ export class HistoryViewProvider {
                             rightHtml += '<div class="diff-line"><div class="diff-line-num">' + rightLine + '</div><div class="diff-line-content">' + escapeHtml(text) + '</div></div>';
                         }
                     });
-                    content.innerHTML = '<div class="diff-sbs-wrapper"><div class="diff-sbs-side" id="diffLeft">' + leftHtml + '</div><div class="diff-sbs-side" id="diffRight">' + rightHtml + '</div></div>';
+                    let leftHeader = '<div class="diff-sbs-title">Original</div>';
+                    let rightHeader = '<div class="diff-sbs-title">Modified</div>';
+                    content.innerHTML = '<div class="diff-sbs-wrapper"><div class="diff-sbs-side" id="diffLeft">' + leftHeader + leftHtml + '</div><div class="diff-sbs-side" id="diffRight">' + rightHeader + rightHtml + '</div></div>';
                     const l = document.getElementById('diffLeft'), r = document.getElementById('diffRight');
                     if (l && r) {
                         l.onscroll = () => { if (!isSyncScroll) return; r.scrollTop = l.scrollTop; r.scrollLeft = l.scrollLeft; };
@@ -322,7 +337,17 @@ export class HistoryViewProvider {
 
         const diffHeaderHtml = `
             <div class="diff-header"><span id="diffTitle">Differences</span>
-                <div style="display: flex; gap: 4px; align-items: center;"><div style="display:flex; border:1px solid var(--vscode-panel-border); border-radius:4px; overflow:hidden;"><button class="btn-action btn-sbs" title="Side-by-Side">◫</button><button class="btn-action btn-unified" title="Unified">☰</button></div><button class="btn-action btn-toggle-sync" style="font-size:0.8em; padding:2px 6px;"></button><button class="btn-action btn-save-patch">Save</button><button class="btn-action btn-open-native">↗</button><button onclick="closeDiff()">✕</button></div></div>
+                <div style="display: flex; gap: 4px; align-items: center;">
+                    <div style="display: flex; border: 1px solid var(--vscode-panel-border); border-radius: 4px; overflow: hidden; margin-right: 4px;">
+                        <button class="btn-action btn-sbs" title="Side-by-Side View">◫</button>
+                        <button class="btn-action btn-unified" title="Unified View">☰</button>
+                    </div>
+                    <button class="btn-action btn-toggle-sync" style="padding: 2px 4px; font-size: 0.75em; height: 28px;"></button>
+                    <button class="btn-action btn-save-patch" title="Save Patch" style="padding: 2px 4px; font-size: 0.75em; height: 28px;">Save</button>
+                    <button class="btn-action btn-open-native" title="Open in VS Code" style="padding: 2px 4px; font-size: 0.75em; height: 28px;">Open in Editor ↗</button>
+                    <button onclick="closeDiff()" class="btn-action" style="padding: 2px 4px; background: transparent; color: var(--vscode-foreground); min-width: 24px; height: 28px;">✕</button>
+                </div>
+            </div>
             <div id="diffInfoBar" class="diff-info-bar" style="display: none;"><span id="diffInfoTag" class="diff-info-tag"></span><span id="diffInfoPath" class="diff-info-path" style="margin-left:10px; font-family:monospace; opacity:0.8;"></span><span id="diffInfoRange" class="diff-info-range"></span></div>`;
 
         if (!useJetBrains) {
@@ -461,7 +486,18 @@ export class HistoryViewProvider {
             }
         })();`;
         return `<!DOCTYPE html><html><head><meta charset="UTF-8"><style>body { margin: 0; display: flex; flex-direction: ${containerFlex}; height: 100vh; font-family: var(--vscode-font-family); color: var(--vscode-foreground); } .sidebar { flex: 1; overflow-y: auto; background: var(--vscode-sideBar-background); } .entry { padding: 8px; border-bottom: 1px solid var(--vscode-panel-border); cursor: pointer; } .entry:hover { background: var(--vscode-list-hoverBackground); } .entry.selected { background: var(--vscode-list-activeSelectionBackground); } ${styles}</style></head><body><div id="diffContainer" class="diff-container" style="order: ${diffOrder}; flex: 1; min-height: 200px;">
-            <div class="diff-header"><span id="diffTitle">Git Diff</span><div style="display:flex; gap:4px; align-items:center;"><div style="display:flex; border:1px solid var(--vscode-panel-border); border-radius:4px; overflow:hidden;"><button class="btn-action btn-sbs">◫</button><button class="btn-action btn-unified">☰</button></div><button class="btn-action btn-toggle-sync" style="font-size:0.8em; padding:2px 6px;"></button><button class="btn-action btn-save-patch">Save</button><button class="btn-action btn-open-native">Open in Editor ↗</button><button onclick="window.closeDiff()">✕</button></div></div>
+            <div class="diff-header"><span id="diffTitle">Git Diff</span>
+                <div style="display: flex; gap: 4px; align-items: center;">
+                    <div style="display: flex; border: 1px solid var(--vscode-panel-border); border-radius: 4px; overflow: hidden; margin-right: 4px;">
+                        <button class="btn-action btn-sbs" title="Side-by-Side View">◫</button>
+                        <button class="btn-action btn-unified" title="Unified View">☰</button>
+                    </div>
+                    <button class="btn-action btn-toggle-sync" style="padding: 2px 4px; font-size: 0.75em; height: 28px;"></button>
+                    <button class="btn-action btn-save-patch" title="Save Patch" style="padding: 2px 4px; font-size: 0.75em; height: 28px;">Save</button>
+                    <button class="btn-action btn-open-native" title="Open in VS Code" style="padding: 2px 4px; font-size: 0.75em; height: 28px;">Open in Editor ↗</button>
+                    <button onclick="window.closeDiff()" class="btn-action" style="padding: 2px 4px; background: transparent; color: var(--vscode-foreground); min-width: 24px; height: 28px;">✕</button>
+                </div>
+            </div>
             <div id="diffInfoBar" class="diff-info-bar" style="display: none;"><span id="diffInfoTag" class="diff-info-tag"></span><span id="diffInfoPath" class="diff-info-path" style="margin-left:10px; font-family:monospace; opacity:0.8;"></span></div>
             <div id="diffContent" class="diff-content"></div></div><div class="sidebar" style="${sidebarStyle}"><div id="detailsHeader" style="display:none; border-bottom: 1px solid var(--vscode-panel-border); padding: 8px;"><div class="actions"><button id="btnBranch">Branch</button><button id="btnBranchVersion">Version</button><button id="btnExplain" class="btn-explain">✨ Explain</button></div><div id="explanationBox" class="explanation-box"><div class="explanation-close" onclick="this.parentElement.style.display='none'">✕</div><div id="explanationText"></div></div></div><div id="list"></div></div><script>${script}</script></body></html>`;
     }
@@ -473,6 +509,12 @@ export class HistoryViewProvider {
             let isSyncScroll = ${isSyncScroll};
             let lastDiffText = '', lastDiffTitle = '';
             let lastCompareParams = null;
+
+            window.addEventListener('message', event => {
+                if (event.data.command === 'readyConfig') {
+                    htmlLayout = event.data.htmlLayout; isSyncScroll = event.data.isSyncScroll; updateLayoutButtons();
+                }
+            });
 
             function updateLayoutButtons() {
                 document.querySelectorAll('.btn-sbs').forEach(btn => {
@@ -506,22 +548,25 @@ export class HistoryViewProvider {
                 if (document.getElementById('diffTitle')) document.getElementById('diffTitle').textContent = title;
                 
                 const infoBar = document.getElementById('diffInfoBar');
+                const infoTag = document.getElementById('diffInfoTag');
+                const infoPath = document.getElementById('diffInfoPath');
                 if (infoBar) {
                     infoBar.style.display = 'flex';
                     if (params) {
-                        const tag = document.getElementById('diffInfoTag'); if (tag) tag.textContent = 'COMMIT ' + (params.commit ? params.commit.hash.substring(0,7) : '');
-                        const path = document.getElementById('diffInfoPath'); if (path) path.textContent = params.filePath || '';
+                        if (infoTag) infoTag.textContent = params.type === 'snapshot' ? 'SNAPSHOT' : 'COMMIT ' + (params.commit ? params.commit.hash.substring(0,7) : 'DIFF');
+                        if (infoPath) infoPath.textContent = params.baseFilePath || params.filePath || '';
                     }
                 }
 
                 if (!diffText || diffText.trim() === '') {
                     content.innerHTML = '<div style="padding: 20px; opacity: 0.5;">No differences found.</div>';
+                    if (infoBar) infoBar.style.display = 'none';
                     return;
                 }
 
                 const lines = diffText.split('\\n').filter(l => !l.startsWith('---') && !l.startsWith('+++') && !l.startsWith('index '));
                 if (htmlLayout === 'unified') {
-                    let html = '<table class="diff-table">';
+                    let html = '<table class="diff-table" style="table-layout: auto;">';
                     let leftLine = 0, rightLine = 0;
                     lines.forEach(line => {
                         let cls = 'context';
@@ -557,7 +602,9 @@ export class HistoryViewProvider {
                             rightHtml += '<div class="diff-line"><div class="diff-line-num">' + rightLine + '</div><div class="diff-line-content">' + escapeHtml(text) + '</div></div>';
                         }
                     });
-                    content.innerHTML = '<div class="diff-sbs-wrapper"><div class="diff-sbs-side" id="diffLeft">' + leftHtml + '</div><div class="diff-sbs-side" id="diffRight">' + rightHtml + '</div></div>';
+                    let leftHeader = '<div class="diff-sbs-title">Original</div>';
+                    let rightHeader = '<div class="diff-sbs-title">Modified</div>';
+                    content.innerHTML = '<div class="diff-sbs-wrapper"><div class="diff-sbs-side" id="diffLeft">' + leftHeader + leftHtml + '</div><div class="diff-sbs-side" id="diffRight">' + rightHeader + rightHtml + '</div></div>';
                     const l = document.getElementById('diffLeft'), r = document.getElementById('diffRight');
                     if (l && r) {
                         l.onscroll = () => { if (!isSyncScroll) return; r.scrollTop = l.scrollTop; r.scrollLeft = l.scrollLeft; };

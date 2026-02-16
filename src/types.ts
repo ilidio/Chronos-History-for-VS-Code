@@ -2,7 +2,7 @@ export interface Snapshot {
     id: string;
     timestamp: number;
     filePath: string; // Relative to workspace root
-    eventType: 'save' | 'rename' | 'delete' | 'label' | 'manual';
+    eventType: 'save' | 'rename' | 'delete' | 'label' | 'manual' | 'selection';
     storagePath?: string; // Filename in the storage directory
     label?: string;
     description?: string;

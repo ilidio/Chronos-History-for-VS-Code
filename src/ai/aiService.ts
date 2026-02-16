@@ -3,7 +3,7 @@ import * as vscode from 'vscode';
 
 export class AIService {
     private client: GoogleGenAI | null = null;
-    private modelId: string = "gemini-3-flash-preview";
+    private modelId: string = "models/gemini-3-flash-preview";
 
     constructor() {
         this.init();
@@ -17,7 +17,7 @@ export class AIService {
     private init() {
         const config = vscode.workspace.getConfiguration('chronos.ai');
         const key = config.get<string>('apiKey');
-        this.modelId = config.get<string>('model', 'gemini-3-flash-preview');
+        this.modelId = config.get<string>('model', 'models/gemini-3-flash-preview');
 
         if (key) {
             this.client = new GoogleGenAI({ apiKey: key });
@@ -26,22 +26,31 @@ export class AIService {
         }
     }
 
-    public isEnabled(feature: 'smartSummaries' | 'explainChanges' | 'experimentPostMortem'): boolean {
+    public isEnabled(feature: string): boolean {
         const config = vscode.workspace.getConfiguration('chronos.ai');
         return !!this.client && config.get<boolean>(feature, true);
     }
 
     private async generate(prompt: string): Promise<string> {
-        if (!this.client) return "";
+        if (!this.client) {
+            console.error("AIService: Client not initialized");
+            return "AI Client not initialized. Please check your API key.";
+        }
         try {
             const response = await this.client.models.generateContent({
                 model: this.modelId,
                 contents: prompt,
             });
-            return response.text || "";
+            
+            // The @google/genai SDK response structure from user's snippet
+            const text = response.text || "";
+            if (!text) {
+                console.warn("AIService: Received empty response from Gemini");
+            }
+            return text;
         } catch (e) {
             console.error("Gemini API Error:", e);
-            return "";
+            return `Error: ${e instanceof Error ? e.message : String(e)}`;
         }
     }
 
@@ -104,7 +113,9 @@ export class AIService {
     }
 
     async generateCommitMessage(diffs: string): Promise<string> {
-        const prompt = `You are an expert developer. Based on the following combined diffs of changes made since the last commit, generate a structured, professional Git commit message.
+        const config = vscode.workspace.getConfiguration('chronos.ai');
+        const language = config.get<string>('language', 'English');
+        const prompt = `You are an expert developer. Based on the following combined diffs of changes made since the last commit, generate a structured, professional Git commit message in ${language}.
         Use Conventional Commits format. 
         Summarize the main changes clearly.
         
