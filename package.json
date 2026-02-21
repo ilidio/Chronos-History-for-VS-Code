@@ -1,0 +1,465 @@
+{
+  "name": "chronos-history",
+  "displayName": "Chronos History",
+  "description": "Comprehensive Chronos and Git History tracking for VS Code.",
+  "version": "4.0.2",
+  "publisher": "IldioMartins",
+  "license": "MIT",
+  "icon": "resources/icon.png",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ilidio/Chronos"
+  },
+  "engines": {
+    "vscode": "^1.80.0"
+  },
+  "categories": [
+    "SCM Providers",
+    "Other"
+  ],
+  "activationEvents": [
+    "onStartupFinished",
+    "onCommand:chronos.showHistory",
+    "onCommand:chronos.showHistoryForSelection",
+    "onCommand:chronos.showProjectHistory",
+    "onCommand:chronos.showRecentChanges",
+    "onCommand:chronos.putLabel",
+    "onCommand:chronos.showGitHistory",
+    "onCommand:chronos.gitHistoryForSelection"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "configuration": {
+      "type": "object",
+      "title": "Chronos",
+      "properties": {
+        "chronos.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable or disable Chronos history tracking."
+        },
+        "chronos.maxDays": {
+          "type": "number",
+          "default": 30,
+          "description": "Number of days to keep history."
+        },
+        "chronos.maxSizeMB": {
+          "type": "number",
+          "default": 500,
+          "description": "Maximum size of history storage in MB."
+        },
+        "chronos.trackSelectionHistory": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable tracking history for text selections."
+        },
+        "chronos.experiments": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable the 'Experiments' feature, which allows you to start a temporary coding session (safe checkpoint) and easily keep or discard changes."
+        },
+        "chronos.viewMode": {
+          "type": "string",
+          "enum": [
+            "editor",
+            "panel"
+          ],
+          "default": "editor",
+          "description": "Choose where to display the history list: 'editor' (Standard tab) or 'panel' (Bottom panel like JetBrains IDEs)."
+        },
+        "chronos.ui.useJetBrainsStyle": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable a more professional, table-based UI mimicking the JetBrains IDE history experience."
+        },
+        "chronos.showDiffSideBySide": {
+          "type": "boolean",
+          "default": true,
+          "description": "If enabled, opens history comparisons in the native VS Code side-by-side diff editor. If disabled, shows inline diffs within the Chronos view."
+        },
+        "chronos.diff.syncScroll": {
+          "type": "boolean",
+          "default": true,
+          "description": "Synchronize scrolling in the diff view."
+        },
+        "chronos.diff.enableHtmlPreview": {
+          "type": "boolean",
+          "default": true,
+          "description": "If enabled, shows a rich HTML preview of changes directly within the Chronos view (IntelliJ style)."
+        },
+        "chronos.diff.htmlPreviewLayout": {
+          "type": "string",
+          "enum": [
+            "side-by-side",
+            "unified"
+          ],
+          "default": "side-by-side",
+          "description": "Choose the layout for the HTML diff preview: 'side-by-side' or 'unified'."
+        },
+        "chronos.diff.htmlPreviewPosition": {
+          "type": "string",
+          "enum": [
+            "top",
+            "bottom",
+            "right"
+          ],
+          "default": "top",
+          "description": "Choose where the HTML diff preview should be positioned relative to the history list."
+        },
+        "chronos.ai.apiKey": {
+          "type": "string",
+          "default": "",
+          "description": "Google Gemini API Key for AI features."
+        },
+        "chronos.ai.model": {
+          "type": "string",
+          "default": "models/gemini-3-flash-preview",
+          "description": "Gemini Model ID to use (e.g., gemini-3-flash-preview, gemini-2.0-flash)."
+        },
+        "chronos.ai.smartSummaries": {
+          "type": "boolean",
+          "default": false,
+          "description": "Automatically generate AI summaries for new snapshots."
+        },
+        "chronos.ai.explainChanges": {
+          "type": "boolean",
+          "default": false,
+          "description": "Show 'Explain' button in history view to analyze changes with AI."
+        },
+        "chronos.ai.experimentPostMortem": {
+          "type": "boolean",
+          "default": false,
+          "description": "Generate AI insights/summaries when stopping an experiment."
+        },
+        "chronos.ai.dailyBriefing": {
+          "type": "boolean",
+          "default": false,
+          "description": "Show a summary of your previous session's progress when starting VS Code."
+        },
+        "chronos.ai.language": {
+          "type": "string",
+          "default": "English",
+          "description": "The language in which AI should generate summaries and briefings (e.g., English, Spanish, Portuguese)."
+        },
+        "chronos.exclude": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [
+            "**/node_modules/**",
+            "**/dist/**",
+            "**/.git/**"
+          ],
+          "description": "Glob patterns to exclude from history."
+        },
+        "chronos.saveInProjectFolder": {
+          "type": "boolean",
+          "default": false,
+          "description": "If enabled, Chronos history will be stored in a .history folder in the project root instead of internal extension storage."
+        },
+        "gitHistory.selection.maxCommits": {
+          "type": "number",
+          "default": 100,
+          "description": "Maximum number of commits to show in selection history."
+        },
+        "gitHistory.selection.followRenames": {
+          "type": "boolean",
+          "default": true,
+          "description": "Follow file renames when tracing history."
+        },
+        "gitHistory.selection.dateFormat": {
+          "type": "string",
+          "default": "yyyy-MM-dd HH:mm",
+          "description": "Date format for git history (date-fns format)."
+        }
+      }
+    },
+    "commands": [
+      {
+        "command": "chronos.showHistory",
+        "title": "Show History",
+        "category": "Chronos"
+      },
+      {
+        "command": "chronos.showHistoryForSelection",
+        "title": "Show History for Selection",
+        "category": "Chronos"
+      },
+      {
+        "command": "chronos.showProjectHistory",
+        "title": "Show Project History",
+        "category": "Chronos"
+      },
+      {
+        "command": "chronos.showGraph",
+        "title": "Show History Graph",
+        "category": "Chronos",
+        "icon": "$(git-branch)"
+      },
+      {
+        "command": "chronos.toggleHeatmap",
+        "title": "Toggle Code Heatmap",
+        "category": "Chronos",
+        "icon": "$(flame)"
+      },
+      {
+        "command": "chronos.showRecentChanges",
+        "title": "Show Recent Changes",
+        "category": "Chronos"
+      },
+      {
+        "command": "chronos.showBriefingForDate",
+        "title": "Show Briefing for Date...",
+        "category": "Chronos",
+        "icon": "$(calendar)"
+      },
+      {
+        "command": "chronos.putLabel",
+        "title": "Put Label...",
+        "category": "Chronos"
+      },
+      {
+        "command": "chronos.restoreSnapshot",
+        "title": "Restore",
+        "category": "Chronos"
+      },
+      {
+        "command": "chronos.restoreProject",
+        "title": "Restore Project to...",
+        "category": "Chronos",
+        "icon": "$(history)"
+      },
+      {
+        "command": "chronos.showGitHistory",
+        "title": "Show Git History",
+        "category": "Git"
+      },
+      {
+        "command": "chronos.gitHistoryForSelection",
+        "title": "Git History for Selection",
+        "category": "Git"
+      },
+      {
+        "command": "chronos.compareToCurrent",
+        "title": "Compare with Current",
+        "category": "Chronos"
+      },
+      {
+        "command": "chronos.compareWithActive",
+        "title": "Compare with Active Editor",
+        "category": "Chronos"
+      },
+      {
+        "command": "chronos.restoreDeletedFile",
+        "title": "Restore File",
+        "category": "Chronos",
+        "icon": "$(reply)"
+      },
+      {
+        "command": "chronos.previewDeletedFile",
+        "title": "Preview Deleted File",
+        "category": "Chronos",
+        "icon": "$(eye)"
+      },
+      {
+        "command": "chronos.startExperiment",
+        "title": "Start Experiment",
+        "category": "Chronos",
+        "icon": "$(beaker)"
+      },
+      {
+        "command": "chronos.manageExperiment",
+        "title": "Manage Experiment",
+        "category": "Chronos"
+      },
+      {
+        "command": "chronos.generateCommitMessage",
+        "title": "Generate Commit Message (AI)",
+        "category": "Chronos",
+        "icon": "$(sparkle)"
+      },
+      {
+        "command": "chronos.generateChangelog",
+        "title": "Generate Changelog (AI)...",
+        "category": "Chronos",
+        "icon": "$(list-unordered)"
+      },
+      {
+        "command": "chronos.showLogs",
+        "title": "Show Chronos Logs",
+        "category": "Chronos"
+      },
+      {
+        "command": "chronos.runDiagnostics",
+        "title": "Run Diagnostics",
+        "category": "Chronos"
+      },
+      {
+        "command": "chronos.exportHistory",
+        "title": "Export History...",
+        "category": "Chronos"
+      },
+      {
+        "command": "chronos.importHistory",
+        "title": "Import History...",
+        "category": "Chronos"
+      },
+      {
+        "command": "chronos.shareSnapshot",
+        "title": "Share Snapshot...",
+        "category": "Chronos",
+        "icon": "$(export)"
+      },
+      {
+        "command": "chronos.importShared",
+        "title": "Import Shared Snapshot...",
+        "category": "Chronos",
+        "icon": "$(import)"
+      }
+    ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "chronos-sidebar",
+          "title": "Chronos",
+          "icon": "resources/black-hole.svg"
+        }
+      ],
+      "panel": [
+        {
+          "id": "chronos-panel",
+          "title": "Chronos History",
+          "icon": "resources/black-hole.svg"
+        }
+      ]
+    },
+    "views": {
+      "chronos-sidebar": [
+        {
+          "id": "chronos.deletedFiles",
+          "name": "Deleted Files"
+        },
+        {
+          "id": "chronos.activity",
+          "name": "Recent Activity (24h)"
+        }
+      ],
+      "chronos-panel": [
+        {
+          "type": "webview",
+          "id": "chronos.historyPanel",
+          "name": "History List"
+        }
+      ]
+    },
+    "menus": {
+      "view/item/context": [
+        {
+          "command": "chronos.restoreDeletedFile",
+          "when": "view == chronos.deletedFiles && viewItem == deletedFile",
+          "group": "inline"
+        },
+        {
+          "command": "chronos.previewDeletedFile",
+          "when": "view == chronos.deletedFiles && viewItem == deletedFile",
+          "group": "inline"
+        }
+      ],
+      "editor/context": [
+        {
+          "submenu": "chronos/context",
+          "group": "1_modification"
+        }
+      ],
+      "explorer/context": [
+        {
+          "submenu": "chronos/context",
+          "group": "7_modification"
+        }
+      ],
+      "chronos/context": [
+        {
+          "command": "chronos.showHistory",
+          "group": "1_local@1"
+        },
+        {
+          "command": "chronos.showHistoryForSelection",
+          "group": "1_local@2",
+          "when": "editorHasSelection"
+        },
+        {
+          "command": "chronos.showGitHistory",
+          "group": "2_git@0"
+        },
+        {
+          "command": "chronos.gitHistoryForSelection",
+          "group": "2_git@1",
+          "when": "editorHasSelection"
+        },
+        {
+          "command": "chronos.showProjectHistory",
+          "group": "3_global@1"
+        },
+        {
+          "command": "chronos.showGraph",
+          "group": "3_global@2"
+        },
+        {
+          "command": "chronos.showRecentChanges",
+          "group": "3_global@3"
+        },
+        {
+          "command": "chronos.toggleHeatmap",
+          "group": "3_global@4"
+        },
+        {
+          "command": "chronos.putLabel",
+          "group": "3_global@5"
+        },
+        {
+          "command": "chronos.generateCommitMessage",
+          "group": "3_global@6",
+          "when": "config.chronos.ai.apiKey"
+        },
+        {
+          "command": "chronos.exportHistory",
+          "group": "4_manage@1"
+        },
+        {
+          "command": "chronos.importHistory",
+          "group": "4_manage@2"
+        }
+      ]
+    },
+    "submenus": [
+      {
+        "id": "chronos/context",
+        "label": "Chronos History"
+      }
+    ]
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./"
+  },
+  "devDependencies": {
+    "@types/adm-zip": "^0.5.7",
+    "@types/node": "^18.0.0",
+    "@types/uuid": "^9.0.0",
+    "@types/vscode": "^1.80.0",
+    "@vscode/vsce": "^2.19.0",
+    "typescript": "^5.1.0"
+  },
+  "dependencies": {
+    "@google/genai": "^1.37.0",
+    "adm-zip": "^0.5.16",
+    "date-fns": "^2.30.0",
+    "glob": "^10.0.0",
+    "minimatch": "^9.0.0",
+    "simple-git": "^3.19.0",
+    "uuid": "^9.0.0",
+    "vis-network": "^10.0.2"
+  }
+}
