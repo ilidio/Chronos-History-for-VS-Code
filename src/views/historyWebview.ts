@@ -123,9 +123,28 @@ export class HistoryViewProvider {
                 case 'share': vscode.commands.executeCommand('chronos.shareSnapshot', message.snapshot); return;
                 case 'compareWithActive': vscode.commands.executeCommand('chronos.compareWithActive', message.snapshot); return;
                 case 'compareWithBranch':
-                    const branches = await vscode.commands.executeCommand<string[]>('_chronos.getBranches', message.filePath);
+                    let branches = await vscode.commands.executeCommand<string[]>('_chronos.getBranches', message.filePath);
                     if (branches && branches.length > 0) {
-                        const selectedBranch = await vscode.window.showQuickPick(branches, { placeHolder: 'Select branch to compare with' });
+                        const filterLabel = "$(filter) Filter by file changes";
+                        const items = [filterLabel, ...branches];
+                        let selectedBranch = await vscode.window.showQuickPick(items, { placeHolder: 'Select branch to compare with' });
+                        
+                        if (selectedBranch === filterLabel) {
+                            await vscode.window.withProgress({
+                                location: vscode.ProgressLocation.Notification,
+                                title: "Filtering branches...",
+                                cancellable: false
+                            }, async () => {
+                                branches = await vscode.commands.executeCommand<string[]>('_chronos.getBranches', message.filePath, true);
+                            });
+                            
+                            if (branches.length === 0) {
+                                vscode.window.showInformationMessage('No branches found with changes to this file.');
+                                return;
+                            }
+                            selectedBranch = await vscode.window.showQuickPick(branches, { placeHolder: 'Select branch with changes to this file' });
+                        }
+
                         if (selectedBranch && enableHtmlPreview) {
                             const diff = await vscode.commands.executeCommand<string>('_chronos.getDiffSnapshotWithBranch', message.snapshot, selectedBranch);
                             panel.webview.postMessage({ command: 'showHtmlDiff', diff, title: 'Snapshot ↔ Branch: ' + selectedBranch, params: { type: 'snapshotWithBranch', snapshot: message.snapshot, branch: selectedBranch } });
@@ -192,9 +211,28 @@ export class HistoryViewProvider {
                     return;
                 case 'explain': if (onExplain) { const text = await onExplain(message.commit); panel.webview.postMessage({ command: 'explainResult', text }); } return;
                 case 'compareWithBranch':
-                    const branches = await vscode.commands.executeCommand<string[]>('_chronos.getBranches', filePath);
+                    let branches = await vscode.commands.executeCommand<string[]>('_chronos.getBranches', filePath);
                     if (branches && branches.length > 0) {
-                        const selectedBranch = await vscode.window.showQuickPick(branches, { placeHolder: 'Select branch to compare with' });
+                        const filterLabel = "$(filter) Filter by file changes";
+                        const items = [filterLabel, ...branches];
+                        let selectedBranch = await vscode.window.showQuickPick(items, { placeHolder: 'Select branch to compare with' });
+
+                        if (selectedBranch === filterLabel) {
+                            await vscode.window.withProgress({
+                                location: vscode.ProgressLocation.Notification,
+                                title: "Filtering branches...",
+                                cancellable: false
+                            }, async () => {
+                                branches = await vscode.commands.executeCommand<string[]>('_chronos.getBranches', filePath, true);
+                            });
+
+                            if (branches.length === 0) {
+                                vscode.window.showInformationMessage('No branches found with changes to this file.');
+                                return;
+                            }
+                            selectedBranch = await vscode.window.showQuickPick(branches, { placeHolder: 'Select branch with changes to this file' });
+                        }
+
                         if (selectedBranch && enableHtmlPreview) {
                             const diff = await vscode.commands.executeCommand<string>('_chronos.getDiffCommitWithBranch', message.commit, selectedBranch, filePath);
                             panel.webview.postMessage({ command: 'showHtmlDiff', diff, title: 'Commit ↔ Branch: ' + selectedBranch, params: { type: 'commitWithBranch', commit: message.commit, branch: selectedBranch, filePath: filePath } });
@@ -512,7 +550,7 @@ export class HistoryViewProvider {
                 }
             }
         })();`;
-        return `<!DOCTYPE html><html><head><meta charset="UTF-8"><style>body { margin: 0; display: flex; flex-direction: ${containerFlex}; height: 100vh; font-family: var(--vscode-font-family); color: var(--vscode-foreground); } .sidebar { flex: 1; overflow-y: auto; background: var(--vscode-sideBar-background); } .entry { padding: 8px; border-bottom: 1px solid var(--vscode-panel-border); cursor: pointer; } .entry:hover { background: var(--vscode-list-hoverBackground); } .entry.selected { background: var(--vscode-list-activeSelectionBackground); } ${styles}</style></head><body><div id="diffContainer" class="diff-container" style="order: ${diffOrder}; flex: 1; min-height: 200px;">
+        return `<!DOCTYPE html><html><head><meta charset="UTF-8"><style>${styles} body { margin: 0; display: flex; flex-direction: ${containerFlex}; height: 100vh; width: 100vw; font-family: var(--vscode-font-family); color: var(--vscode-foreground); overflow: hidden; } .sidebar { flex: 1; display: flex; flex-direction: column; background: var(--vscode-sideBar-background); overflow: hidden; min-height: 0; } .list { flex: 1; overflow-y: auto; min-height: 0; } .entry { padding: 8px; border-bottom: 1px solid var(--vscode-panel-border); cursor: pointer; flex-shrink: 0; } .entry:hover { background: var(--vscode-list-hoverBackground); } .entry.selected { background: var(--vscode-list-activeSelectionBackground); } </style></head><body><div id="diffContainer" class="diff-container" style="order: ${diffOrder}; flex: 1; min-height: 200px;">
             <div class="diff-header"><span id="diffTitle">Git Diff</span>
                 <div style="display: flex; gap: 4px; align-items: center;">
                     <div style="display: flex; border: 1px solid var(--vscode-panel-border); border-radius: 4px; overflow: hidden; margin-right: 4px;">
@@ -526,7 +564,7 @@ export class HistoryViewProvider {
                 </div>
             </div>
             <div id="diffInfoBar" class="diff-info-bar" style="display: none;"><span id="diffInfoTag" class="diff-info-tag"></span><span id="diffInfoPath" class="diff-info-path" style="margin-left:10px; font-family:monospace; opacity:0.8;"></span></div>
-            <div id="diffContent" class="diff-content"></div></div><div class="sidebar" style="${sidebarStyle}"><div id="detailsHeader" style="display:none; border-bottom: 1px solid var(--vscode-panel-border); padding: 8px;"><div class="actions"><button id="btnBranch">Branch</button><button id="btnBranchVersion">Version</button><button id="btnExplain" class="btn-explain">✨ Explain</button></div><div id="explanationBox" class="explanation-box"><div class="explanation-close" onclick="this.parentElement.style.display='none'">✕</div><div id="explanationText"></div></div></div><div id="list"></div></div><script>${script}</script></body></html>`;
+            <div id="diffContent" class="diff-content"></div></div><div class="sidebar" style="${sidebarStyle}"><div id="detailsHeader" style="display:none; border-bottom: 1px solid var(--vscode-panel-border); padding: 8px;"><div class="actions"><button id="btnBranch">Branch</button><button id="btnBranchVersion">Version</button><button id="btnExplain" class="btn-explain">✨ Explain</button></div><div id="explanationBox" class="explanation-box"><div class="explanation-close" onclick="this.parentElement.style.display='none'">✕</div><div id="explanationText"></div></div></div><div id="list" class="list"></div></div><script>${script}</script></body></html>`;
     }
 
     private _getGitSharedScript(htmlLayout: string, isSyncScroll: boolean) {

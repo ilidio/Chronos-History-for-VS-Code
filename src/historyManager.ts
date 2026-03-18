@@ -5,6 +5,7 @@ import { ChronosConfig, Snapshot } from './types';
 import { minimatch } from 'minimatch';
 import { AIService } from './ai/aiService';
 import { GitService } from './git/gitService';
+import { GitIgnoreService } from './git/gitIgnoreService';
 
 export class HistoryManager {
     private storage: HistoryStorage;
@@ -13,12 +14,14 @@ export class HistoryManager {
     private activeExperiment: { name: string, snapshotId: string, filePath: string } | null = null;
     private aiService: AIService;
     private gitService: GitService;
+    private gitIgnoreService: GitIgnoreService; // Added private member
     private selectionTimeout: NodeJS.Timeout | null = null;
 
-    constructor(context: vscode.ExtensionContext, storage: HistoryStorage, gitService: GitService) {
+    constructor(context: vscode.ExtensionContext, storage: HistoryStorage, gitService: GitService, gitIgnoreService: GitIgnoreService) { // Updated constructor
         this.storage = storage;
         this.gitService = gitService;
         this.aiService = new AIService();
+        this.gitIgnoreService = gitIgnoreService; // Stored GitIgnoreService
         this.config = this.loadConfig();
         
         this.statusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left);
@@ -26,7 +29,13 @@ export class HistoryManager {
 
         vscode.workspace.onDidChangeConfiguration(e => {
             if (e.affectsConfiguration('chronos')) {
+                const oldRespectGitIgnore = this.config.respectGitIgnore;
                 this.config = this.loadConfig();
+                if (this.config.respectGitIgnore && !oldRespectGitIgnore) {
+                    this.gitIgnoreService.refreshGitIgnorePatterns(true); // Force refresh if just enabled
+                } else if (!this.config.respectGitIgnore && oldRespectGitIgnore) {
+                    this.gitIgnoreService.clearPatterns(); // Clear patterns if just disabled
+                }
             }
         });
 
@@ -43,7 +52,8 @@ export class HistoryManager {
             maxSizeMB: config.get<number>('maxSizeMB', 500),
             trackSelectionHistory: config.get<boolean>('trackSelectionHistory', true),
             exclude: config.get<string[]>('exclude', []),
-            dailyBriefing: config.get<boolean>('ai.dailyBriefing', true)
+            dailyBriefing: config.get<boolean>('ai.dailyBriefing', true),
+            respectGitIgnore: config.get<boolean>('respectGitIgnore', false) // Added new setting
         };
     }
 
@@ -57,6 +67,9 @@ export class HistoryManager {
         );
 
         setTimeout(() => {
+            if (this.config.respectGitIgnore) {
+                this.gitIgnoreService.refreshGitIgnorePatterns(true); // Initial load if enabled
+            }
             vscode.workspace.textDocuments.forEach(doc => this.onOpen(doc));
             // Maintenance
             this.storage.prune(this.config.maxDays, this.config.maxSizeMB).catch(err => console.error('Pruning failed:', err));
@@ -293,7 +306,14 @@ export class HistoryManager {
     }
 
     private isExcluded(path: string): boolean {
-        return this.config.exclude.some(pattern => minimatch(path, pattern));
+        if (this.config.exclude.some(pattern => minimatch(path, pattern))) {
+            return true;
+        }
+        if (this.config.respectGitIgnore) {
+            this.gitIgnoreService.refreshGitIgnorePatterns(); // Ensure patterns are up-to-date
+            return this.gitIgnoreService.isPathIgnored(path);
+        }
+        return false;
     }
 
     private async onOpen(doc: vscode.TextDocument) {

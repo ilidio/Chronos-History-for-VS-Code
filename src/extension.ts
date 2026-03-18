@@ -13,6 +13,7 @@ import { ActivityProvider } from './views/activityProvider';
 import { HeatmapController } from './views/heatmapController';
 import { DivergenceProvider } from './views/divergenceProvider';
 import { GitService } from './git/gitService';
+import { GitIgnoreService } from './git/gitIgnoreService';
 import { AIService } from './ai/aiService';
 import { BackupService } from './backup';
 import { ProjectRestorer } from './timeTravel';
@@ -29,6 +30,7 @@ let activityProvider: ActivityProvider;
 let heatmapController: HeatmapController;
 let divergenceProvider: DivergenceProvider;
 let gitService: GitService;
+let gitIgnoreService: GitIgnoreService;
 let aiService: AIService;
 let backupService: BackupService;
 let projectRestorer: ProjectRestorer;
@@ -46,8 +48,9 @@ export function activate(context: vscode.ExtensionContext) {
         graphViewProvider = new GraphViewProvider(context.extensionUri);
         gitService = new GitService();
         aiService = new AIService();
+        gitIgnoreService = new GitIgnoreService(outputChannel); // Instantiate GitIgnoreService
         
-        manager = new HistoryManager(context, storage, gitService);
+        manager = new HistoryManager(context, storage, gitService, gitIgnoreService); // Pass to HistoryManager
         
         historyFilter = new HistoryFilter(storage, gitService);
         deletedFilesProvider = new DeletedFilesProvider(manager, storage);
@@ -120,12 +123,14 @@ export function activate(context: vscode.ExtensionContext) {
                 const workspaceFolder = vscode.workspace.getWorkspaceFolder(vscode.Uri.file(filePath));
                 if (!workspaceFolder) return '';
                 try {
+                    const repoRoot = await gitService.getRepoRoot(workspaceFolder.uri.fsPath);
                     const canonicalPath = await gitService.getCanonicalPath(filePath);
-                    const historicalContent = await gitService.getFileContentFromBranch(branch, canonicalPath, workspaceFolder.uri.fsPath);
+                    const historicalContent = await gitService.getFileContentFromBranch(branch, canonicalPath, repoRoot);
                     const currentContent = fs.existsSync(filePath) ? fs.readFileSync(filePath, 'utf8') : '';
                     
                     const ext = path.extname(filePath) || '.txt';
-                    const temp1 = await createTempFile(`branch_${branch}_${path.basename(filePath)}${ext}`, historicalContent);
+                    const branchSafe = branch.replace(/[\/\\]/g, '_');
+                    const temp1 = await createTempFile(`branch_${branchSafe}_${path.basename(filePath)}${ext}`, historicalContent);
                     const temp2 = await createTempFile(`current_${path.basename(filePath)}${ext}`, currentContent);
                     
                     let diff = await gitService.getDiff(temp1.fsPath, temp2.fsPath);
@@ -147,13 +152,15 @@ export function activate(context: vscode.ExtensionContext) {
                 const workspaceFolder = vscode.workspace.getWorkspaceFolder(fileUri);
                 if (!workspaceFolder) return '';
                 try {
+                    const repoRoot = await gitService.getRepoRoot(workspaceFolder.uri.fsPath);
                     const canonicalPath = await gitService.getCanonicalPath(fileUri.fsPath);
-                    const branchContent = await gitService.getFileContentFromBranch(branch, canonicalPath, workspaceFolder.uri.fsPath);
+                    const branchContent = await gitService.getFileContentFromBranch(branch, canonicalPath, repoRoot);
                     const snapshotUri = await storage.getSnapshotUri(snapshot, fileUri);
                     const snapshotContent = (await vscode.workspace.fs.readFile(snapshotUri)).toString();
                     
+                    const branchSafe = branch.replace(/[\/\\]/g, '_');
                     const temp1 = await createTempFile(`snapshot_${snapshot.id.substring(0,8)}_${path.basename(snapshot.filePath)}`, snapshotContent);
-                    const temp2 = await createTempFile(`branch_${branch}_${path.basename(snapshot.filePath)}`, branchContent);
+                    const temp2 = await createTempFile(`branch_${branchSafe}_${path.basename(snapshot.filePath)}`, branchContent);
                     
                     let diff = await gitService.getDiff(temp1.fsPath, temp2.fsPath);
                     const escapeRegex = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -166,12 +173,14 @@ export function activate(context: vscode.ExtensionContext) {
                 const workspaceFolder = vscode.workspace.getWorkspaceFolder(vscode.Uri.file(filePath));
                 if (!workspaceFolder) return '';
                 try {
-                    const canonicalPath = await gitService.getCanonicalPath(filePath);
-                    const branchContent = await gitService.getFileContentFromBranch(branch, canonicalPath, workspaceFolder.uri.fsPath);
-                    const { stdout: commitContent } = await gitService.runGit(['show', `${commit.hash}:${canonicalPath}`], workspaceFolder.uri.fsPath);
+                    const repoRoot = await gitService.getRepoRoot(workspaceFolder.uri.fsPath);
+                    const canonicalPath = await gitService.getCanonicalPath(filePath, commit.hash);
+                    const branchContent = await gitService.getFileContentFromBranch(branch, canonicalPath, repoRoot);
+                    const { stdout: commitContent } = await gitService.runGit(['show', `${commit.hash}:${canonicalPath}`], repoRoot);
                     
+                    const branchSafe = branch.replace(/[\/\\]/g, '_');
                     const temp1 = await createTempFile(`commit_${commit.hash.substring(0,7)}_${path.basename(filePath)}`, commitContent);
-                    const temp2 = await createTempFile(`branch_${branch}_${path.basename(filePath)}`, branchContent);
+                    const temp2 = await createTempFile(`branch_${branchSafe}_${path.basename(filePath)}`, branchContent);
                     
                     let diff = await gitService.getDiff(temp1.fsPath, temp2.fsPath);
                     const escapeRegex = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -185,8 +194,9 @@ export function activate(context: vscode.ExtensionContext) {
                 const workspaceFolder = vscode.workspace.getWorkspaceFolder(fileUri);
                 if (!workspaceFolder) return;
                 try {
+                    const repoRoot = await gitService.getRepoRoot(workspaceFolder.uri.fsPath);
                     const canonicalPath = await gitService.getCanonicalPath(fileUri.fsPath);
-                    const branchContent = await gitService.getFileContentFromBranch(branchName, canonicalPath, workspaceFolder.uri.fsPath);
+                    const branchContent = await gitService.getFileContentFromBranch(branchName, canonicalPath, repoRoot);
                     const snapshotUri = await storage.getSnapshotUri(snapshot, fileUri);
                     const branchTemp = await createTempFile(`branch_${branchName.replace(/[\/\\]/g, '_')}_${path.basename(fileUri.fsPath)}`, branchContent);
                     const title = `${path.basename(fileUri.fsPath)} (Snapshot ${new Date(snapshot.timestamp).toLocaleString()}) ↔ (${branchName})`;
@@ -197,16 +207,17 @@ export function activate(context: vscode.ExtensionContext) {
                 const workspaceFolder = vscode.workspace.getWorkspaceFolder(vscode.Uri.file(filePath));
                 if (!workspaceFolder) return;
                 try {
-                    const canonicalPath = await gitService.getCanonicalPath(filePath);
-                    const branchContent = await gitService.getFileContentFromBranch(branchName, canonicalPath, workspaceFolder.uri.fsPath);
-                    const { stdout: commitContent } = await gitService.runGit(['show', `${commit.hash}:${canonicalPath}`], workspaceFolder.uri.fsPath);
+                    const repoRoot = await gitService.getRepoRoot(workspaceFolder.uri.fsPath);
+                    const canonicalPath = await gitService.getCanonicalPath(filePath, commit.hash);
+                    const branchContent = await gitService.getFileContentFromBranch(branchName, canonicalPath, repoRoot);
+                    const { stdout: commitContent } = await gitService.runGit(['show', `${commit.hash}:${canonicalPath}`], repoRoot);
                     const commitTemp = await createTempFile(`commit_${commit.hash.substring(0,7)}_${path.basename(filePath)}`, commitContent);
                     const branchTemp = await createTempFile(`branch_${branchName.replace(/[\/\\]/g, '_')}_${path.basename(filePath)}`, branchContent);
                     const title = `${path.basename(filePath)} (Commit ${commit.hash.substring(0,7)}) ↔ (${branchName})`;
                     await vscode.commands.executeCommand('vscode.diff', commitTemp, branchTemp, title);
                 } catch (e) { vscode.window.showErrorMessage(`Failed: ${e}`); }
             }),
-            vscode.commands.registerCommand('_chronos.getBranches', async (filePath?: string) => {
+            vscode.commands.registerCommand('_chronos.getBranches', async (filePath?: string, filterByFile?: boolean) => {
                 let workspaceFolder: vscode.WorkspaceFolder | undefined;
                 
                 if (filePath) {
@@ -222,7 +233,7 @@ export function activate(context: vscode.ExtensionContext) {
                 }
 
                 if (!workspaceFolder) return [];
-                return await gitService.getBranches(workspaceFolder.uri.fsPath);
+                return await gitService.getBranches(workspaceFolder.uri.fsPath, filterByFile ? filePath : undefined);
             }),
             vscode.commands.registerCommand('chronos.compareWithBranch', compareWithBranch),
             vscode.commands.registerCommand('chronos.compareWithBranchVersion', compareWithBranchVersion),
@@ -232,7 +243,7 @@ export function activate(context: vscode.ExtensionContext) {
                     // Try to get diff from parent if not present
                     const workspaceFolder = vscode.workspace.getWorkspaceFolder(vscode.Uri.file(filePath));
                     if (!workspaceFolder) return '';
-                    const canonicalPath = await gitService.getCanonicalPath(filePath);
+                    const canonicalPath = await gitService.getCanonicalPath(filePath, commit.hash);
                     const { stdout } = await gitService.runGit(['show', '--pretty=format:', commit.hash, '--', canonicalPath], workspaceFolder.uri.fsPath);
                     return stdout;
                 } catch (e) {
@@ -305,9 +316,24 @@ async function generateAICommitMessage() {
 
 async function createTempFile(name: string, content: string): Promise<vscode.Uri> {
     const tmpDir = path.join(os.tmpdir(), 'chronos_diff');
-    if (!fs.existsSync(tmpDir)) fs.mkdirSync(tmpDir);
-    const filePath = path.join(tmpDir, name);
-    fs.writeFileSync(filePath, content);
+    try {
+        if (!fs.existsSync(tmpDir)) {
+            fs.mkdirSync(tmpDir, { recursive: true });
+        }
+    } catch (e) {
+        console.error('Failed to create temp directory:', e);
+    }
+    
+    // Sanitize the name to ensure it doesn't try to create subdirectories
+    const safeName = name.replace(/[\/\\]/g, '_');
+    const filePath = path.join(tmpDir, safeName);
+    
+    try {
+        fs.writeFileSync(filePath, content);
+    } catch (e) {
+        console.error('Failed to write temp file:', e);
+        throw e;
+    }
     return vscode.Uri.file(filePath);
 }
 
@@ -421,7 +447,7 @@ async function openDiffGitCurrent(commit: GitCommit, filePath: string, selection
 
     try {
         // 1. Get historical version content
-        const canonicalPath = await gitService.getCanonicalPath(filePath);
+        const canonicalPath = await gitService.getCanonicalPath(filePath, commit.hash);
         const showArgs = [`${commit.hash}:${canonicalPath}`];
         const { stdout: historicalContent } = await gitService.runGit(['show', ...showArgs], workspaceFolder.uri.fsPath);
         
@@ -505,6 +531,9 @@ async function getDiffForSnapshot(snapshot: Snapshot, contextFileUri: vscode.Uri
 }
 
 async function compareSnapshots(s1: Snapshot, s2: Snapshot): Promise<string> {
+    if (s1.id === s2.id) {
+        return "Snapshots are identical.";
+    }
     await ensureStorage();
     // Order by timestamp: snap1 should be older
     const [snap1, snap2] = s1.timestamp < s2.timestamp ? [s1, s2] : [s2, s1];
@@ -530,6 +559,10 @@ async function compareSnapshots(s1: Snapshot, s2: Snapshot): Promise<string> {
 }
 
 async function compareTwoSnapshots(s1: Snapshot, s2: Snapshot) {
+    if (s1.id === s2.id) {
+        vscode.window.showInformationMessage('Snapshots are identical. Nothing to compare.');
+        return;
+    }
     await ensureStorage();
     // Order by timestamp: snap1 should be older
     const [snap1, snap2] = s1.timestamp < s2.timestamp ? [s1, s2] : [s2, s1];
@@ -837,27 +870,43 @@ async function compareWithBranch(branchName?: string) {
 
     let selectedBranch = branchName;
     if (!selectedBranch) {
-        const branches = await gitService.getBranches(workspaceFolder.uri.fsPath);
+        let branches = await gitService.getBranches(workspaceFolder.uri.fsPath);
         if (branches.length === 0) {
             vscode.window.showInformationMessage('No branches found.');
             return;
         }
-        // Move common branches to top
-        const common = ['main', 'master', 'develop', 'dev'];
-        branches.sort((a, b) => {
-            const aIdx = common.indexOf(a);
-            const bIdx = common.indexOf(b);
-            if (aIdx !== -1 && bIdx !== -1) return aIdx - bIdx;
-            if (aIdx !== -1) return -1;
-            if (bIdx !== -1) return 1;
-            return a.localeCompare(b);
-        });
 
-        selectedBranch = await vscode.window.showQuickPick(branches, { placeHolder: 'Select branch to compare with current file' });
+        const filterLabel = "$(filter) Filter by file changes";
+        const items = [filterLabel, ...branches];
+
+        let selection = await vscode.window.showQuickPick(items, { placeHolder: 'Select branch to compare with current file' });
+        
+        if (selection === filterLabel) {
+            vscode.window.withProgress({
+                location: vscode.ProgressLocation.Notification,
+                title: "Filtering branches...",
+                cancellable: false
+            }, async () => {
+                branches = await gitService.getBranches(workspaceFolder.uri.fsPath, uri.fsPath);
+            }).then(async () => {
+                if (branches.length === 0) {
+                    vscode.window.showInformationMessage('No branches found with changes to this file.');
+                    return;
+                }
+                selectedBranch = await vscode.window.showQuickPick(branches, { placeHolder: 'Select branch with changes to this file' });
+                if (selectedBranch) proceedWithCompare(selectedBranch, uri, workspaceFolder);
+            });
+            return;
+        } else {
+            selectedBranch = selection;
+        }
     }
     
     if (!selectedBranch) return;
+    await proceedWithCompare(selectedBranch, uri, workspaceFolder);
+}
 
+async function proceedWithCompare(selectedBranch: string, uri: vscode.Uri, workspaceFolder: vscode.WorkspaceFolder) {
     try {
         const canonicalPath = await gitService.getCanonicalPath(uri.fsPath);
         const historicalContent = await gitService.getFileContentFromBranch(selectedBranch, canonicalPath, workspaceFolder.uri.fsPath);
@@ -881,17 +930,42 @@ async function compareWithBranchVersion(source?: { snapshot?: Snapshot, commit?:
     const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
     if (!workspaceFolder) return;
 
-    const branches = await gitService.getBranches(workspaceFolder.uri.fsPath);
+    let branches = await gitService.getBranches(workspaceFolder.uri.fsPath);
     if (branches.length === 0) {
         vscode.window.showInformationMessage('No branches found.');
         return;
     }
 
-    const selectedBranch = await vscode.window.showQuickPick(branches, { placeHolder: 'Step 1: Select branch' });
-    if (!selectedBranch) return;
+    const filterLabel = "$(filter) Filter by file changes";
+    const items = [filterLabel, ...branches];
+    
+    let selectedBranchSelection = await vscode.window.showQuickPick(items, { placeHolder: 'Step 1: Select branch' });
+    if (!selectedBranchSelection) return;
 
     const filePath = source?.filePath || vscode.window.activeTextEditor?.document.uri.fsPath;
     if (!filePath) return;
+
+    let selectedBranch: string | undefined;
+
+    if (selectedBranchSelection === filterLabel) {
+        await vscode.window.withProgress({
+            location: vscode.ProgressLocation.Notification,
+            title: "Filtering branches...",
+            cancellable: false
+        }, async () => {
+            branches = await gitService.getBranches(workspaceFolder.uri.fsPath, filePath);
+        });
+
+        if (branches.length === 0) {
+            vscode.window.showInformationMessage('No branches found with changes to this file.');
+            return;
+        }
+        selectedBranch = await vscode.window.showQuickPick(branches, { placeHolder: 'Select branch with changes to this file' });
+    } else {
+        selectedBranch = selectedBranchSelection;
+    }
+
+    if (!selectedBranch) return;
 
     const config = vscode.workspace.getConfiguration('gitHistory.selection');
     const commits = await gitService.getHistoryForFile(filePath, {
@@ -923,7 +997,7 @@ async function compareWithBranchVersion(source?: { snapshot?: Snapshot, commit?:
         await vscode.commands.executeCommand('chronos.compareTwoCommits', source.commit.hash, pickedCommit.commit.hash, filePath);
     } else {
         // Compare current file with this specific commit
-        const canonicalPath = await gitService.getCanonicalPath(filePath);
+        const canonicalPath = await gitService.getCanonicalPath(filePath, pickedCommit.commit.hash);
         const commitContent = await gitService.runGit(['show', `${pickedCommit.commit.hash}:${canonicalPath}`], workspaceFolder.uri.fsPath);
         
         const ext = path.extname(filePath) || '.txt';
@@ -934,14 +1008,19 @@ async function compareWithBranchVersion(source?: { snapshot?: Snapshot, commit?:
 }
 
 async function compareTwoCommits(h1: string, h2: string, filePath: string) {
+    if (h1 === h2) {
+        vscode.window.showInformationMessage('Commits are identical. Nothing to compare.');
+        return;
+    }
     const workspaceFolder = vscode.workspace.getWorkspaceFolder(vscode.Uri.file(filePath));
     if (!workspaceFolder) return;
     const fileName = path.basename(filePath);
     
     try {
-        const canonicalPath = await gitService.getCanonicalPath(filePath);
-        const { stdout: content1 } = await gitService.runGit(['show', `${h1}:${canonicalPath}`], workspaceFolder.uri.fsPath);
-        const { stdout: content2 } = await gitService.runGit(['show', `${h2}:${canonicalPath}`], workspaceFolder.uri.fsPath);
+        const canonicalPath1 = await gitService.getCanonicalPath(filePath, h1);
+        const canonicalPath2 = await gitService.getCanonicalPath(filePath, h2);
+        const { stdout: content1 } = await gitService.runGit(['show', `${h1}:${canonicalPath1}`], workspaceFolder.uri.fsPath);
+        const { stdout: content2 } = await gitService.runGit(['show', `${h2}:${canonicalPath2}`], workspaceFolder.uri.fsPath);
         
         const ext = path.extname(filePath) || '.txt';
         const leftTemp = await createTempFile(`git_${h1.substring(0,7)}${ext}`, content1);

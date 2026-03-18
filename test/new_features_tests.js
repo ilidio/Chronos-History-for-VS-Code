@@ -1,6 +1,6 @@
 const Module = require('module');
 const originalRequire = Module.prototype.require;
-const { mockVscode, fsStore, commandsMap } = require('./mock_vscode');
+const { mockVscode, fsStore, commandsMap, setFileContent } = require('./mock_vscode');
 
 // Mock vscode module
 Module.prototype.require = function(request) {
@@ -160,6 +160,161 @@ async function runNewFeaturesTests() {
         // Restore
         mockVscode.commands.executeCommand = originalExecuteCommand;
         mockVscode.window.showQuickPick = originalShowQuickPick;
+
+        // Restore
+        mockVscode.commands.executeCommand = originalExecuteCommand;
+        mockVscode.window.showQuickPick = originalShowQuickPick;
+
+        // --- Test 4: GitIgnoreService Integration ---
+        console.log('\n[Test 4] GitIgnoreService Integration');
+
+        // Clear fsStore before starting gitignore tests
+        fsStore.clear();
+
+        // Setup a mock workspace folder for GitIgnoreService
+        mockVscode.workspace.workspaceFolders = [{ uri: mockVscode.Uri.file('/project'), name: 'project', index: 0 }];
+        mockVscode.workspace.rootPath = '/project';
+        mockVscode.workspace.asRelativePath = (uriOrStr) => {
+            const p = typeof uriOrStr === 'string' ? uriOrStr : uriOrStr.fsPath; // Use fsPath for Uri objects
+            return path.relative(mockVscode.workspace.rootPath, p);
+        };
+        mockVscode.workspace.getWorkspaceFolder = (uri) => {
+            if (uri.fsPath.startsWith('/project')) {
+                return { uri: mockVscode.Uri.file('/project'), name: 'project', index: 0 };
+            }
+            return undefined;
+        };
+
+
+        const { HistoryManager } = require('../out/historyManager');
+        const { HistoryStorage } = require('../out/storage');
+        const { GitService } = require('../out/git/gitService');
+        const { GitIgnoreService } = require('../out/git/gitIgnoreService');
+
+        const mockStorage = new HistoryStorage(context, outputChannel);
+        const mockGitService = new GitService();
+        const mockGitIgnoreService = new GitIgnoreService(outputChannel);
+
+        let managerWithGitIgnore = new HistoryManager(context, mockStorage, mockGitService, mockGitIgnoreService);
+        
+        // Mock getConfiguration for ChronosConfig
+        let mockChronosConfig = {
+            enabled: true,
+            maxDays: 30,
+            maxSizeMB: 500,
+            trackSelectionHistory: true,
+            exclude: [],
+            dailyBriefing: true,
+            respectGitIgnore: false // Default for tests
+        };
+        mockVscode.workspace.getConfiguration = (section) => {
+            if (section === 'chronos') {
+                return {
+                    get: (key, defaultValue) => {
+                        return mockChronosConfig[key] !== undefined ? mockChronosConfig[key] : defaultValue;
+                    }
+                };
+            }
+            return { get: (key, defaultValue) => defaultValue };
+        };
+
+        // Test 4.1: respectGitIgnore = false (default)
+        console.log('[Test 4.1] respectGitIgnore = false');
+        setFileContent(mockVscode.Uri.file('/project/.gitignore'), 'secret.txt\n*.log');
+        await mockGitIgnoreService.refreshGitIgnorePatterns(true); // Populate patterns
+        
+        // File in chronos.exclude
+        mockChronosConfig.exclude = ['**/temp.txt'];
+        if (managerWithGitIgnore.isExcluded('/project/temp.txt') === true) {
+            console.log('✅ isExcluded returns true for chronos.exclude with respectGitIgnore=false.');
+        } else {
+            console.error('❌ isExcluded failed for chronos.exclude with respectGitIgnore=false.');
+        }
+
+        // File in .gitignore but not chronos.exclude
+        if (managerWithGitIgnore.isExcluded('/project/secret.txt') === false) {
+            console.log('✅ isExcluded returns false for .gitignore only with respectGitIgnore=false.');
+        } else {
+            console.error('❌ isExcluded failed for .gitignore only with respectGitIgnore=false.');
+        }
+        if (managerWithGitIgnore.isExcluded('/project/test.log') === false) {
+            console.log('✅ isExcluded returns false for .gitignore only with respectGitIgnore=false (glob).');
+        } else {
+            console.error('❌ isExcluded failed for .gitignore only with respectGitIgnore=false (glob).');
+        }
+
+        // File in neither
+        if (managerWithGitIgnore.isExcluded('/project/normal.js') === false) {
+            console.log('✅ isExcluded returns false for neither with respectGitIgnore=false.');
+        } else {
+            console.error('❌ isExcluded failed for neither with respectGitIgnore=false.');
+        }
+
+        // Test 4.2: respectGitIgnore = true
+        console.log('[Test 4.2] respectGitIgnore = true');
+        mockChronosConfig.respectGitIgnore = true;
+        // Trigger config reload in manager
+        managerWithGitIgnore.config = managerWithGitIgnore.loadConfig(); // Simulate config change
+        await mockGitIgnoreService.refreshGitIgnorePatterns(true); // Ensure patterns are re-read with new config
+
+
+        // File in chronos.exclude (still true)
+        if (managerWithGitIgnore.isExcluded('/project/temp.txt') === true) {
+            console.log('✅ isExcluded returns true for chronos.exclude with respectGitIgnore=true.');
+        } else {
+            console.error('❌ isExcluded failed for chronos.exclude with respectGitIgnore=true.');
+        }
+
+        // File in .gitignore (now true)
+        if (managerWithGitIgnore.isExcluded('/project/secret.txt') === true) {
+            console.log('✅ isExcluded returns true for .gitignore only with respectGitIgnore=true.');
+        } else {
+            console.error('❌ isExcluded failed for .gitignore only with respectGitIgnore=true.');
+        }
+        if (managerWithGitIgnore.isExcluded('/project/another.log') === true) {
+            console.log('✅ isExcluded returns true for .gitignore only with respectGitIgnore=true (glob).');
+        } else {
+            console.error('❌ isExcluded failed for .gitignore only with respectGitIgnore=true (glob).');
+        }
+
+        // File in both (still true)
+        mockChronosConfig.exclude = ['**/*.log']; // Now .log files are also in chronos.exclude
+        managerWithGitIgnore.config = managerWithGitIgnore.loadConfig(); // Simulate config change
+        if (managerWithGitIgnore.isExcluded('/project/combined.log') === true) {
+            console.log('✅ isExcluded returns true for both with respectGitIgnore=true.');
+        } else {
+            console.error('❌ isExcluded failed for both with respectGitIgnore=true.');
+        }
+        mockChronosConfig.exclude = []; // Reset
+
+        // File in neither (still false)
+        if (managerWithGitIgnore.isExcluded('/project/another_normal.js') === false) {
+            console.log('✅ isExcluded returns false for neither with respectGitIgnore=true.');
+        } else {
+            console.error('❌ isExcluded failed for neither with respectGitIgnore=true.');
+        }
+        
+        // Test 4.3: .gitignore negation patterns
+        console.log('[Test 4.3] .gitignore negation patterns');
+        setFileContent(mockVscode.Uri.file('/project/.gitignore'), 'build/\n!build/keep.js');
+        await mockGitIgnoreService.refreshGitIgnorePatterns(true); // Reload gitignore patterns
+
+        if (managerWithGitIgnore.isExcluded('/project/build/ignored.js') === true) {
+            console.log('✅ isExcluded returns true for file in ignored directory.');
+        } else {
+            console.error('❌ isExcluded failed for file in ignored directory.');
+        }
+        if (managerWithGitIgnore.isExcluded('/project/build/keep.js') === false) {
+            console.log('✅ isExcluded returns false for file explicitly unignored.');
+        } else {
+            console.error('❌ isExcluded failed for file explicitly unignored.');
+        }
+        
+        // Clean up mock config
+        mockChronosConfig.respectGitIgnore = false;
+        mockChronosConfig.exclude = [];
+        managerWithGitIgnore.config = managerWithGitIgnore.loadConfig(); // Reset manager config
+        fsStore.clear(); // Clear mock filesystem
 
         console.log('\n✅ All New Features Integration Tests Passed!');
 

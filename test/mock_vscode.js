@@ -21,6 +21,11 @@ class MockUri {
 const commandsMap = new Map();
 const fsStore = new Map();
 
+// Helper to set file content in the mock FS
+function setFileContent(uri, content) {
+    fsStore.set(uri.toString(), Buffer.from(content));
+}
+
 const mockVscode = {
     Uri: MockUri,
     Position: class {
@@ -56,6 +61,12 @@ const mockVscode = {
     },
     StatusBarAlignment: { Left: 1, Right: 2 },
     OverviewRulerLane: { Left: 1, Center: 2, Right: 4, Full: 7 },
+    FileType: {
+        Unknown: 0,
+        File: 1,
+        Directory: 2,
+        SymbolicLink: 64
+    },
     window: {
         createStatusBarItem: () => ({ show: () => {}, hide: () => {}, text: '', command: '' }),
         createOutputChannel: (name) => ({
@@ -92,15 +103,23 @@ const mockVscode = {
     workspace: {
         fs: {
             createDirectory: async (uri) => {},
-            writeFile: async (uri, content) => { fsStore.set(uri.toString(), content); },
+            writeFile: async (uri, content) => { fsStore.set(uri.toString(), Buffer.from(content)); },
             readFile: async (uri) => {
                 const data = fsStore.get(uri.toString());
-                if (!data) throw new Error('File not found: ' + uri.toString());
+                if (!data) {
+                    const error = new Error('File not found: ' + uri.toString());
+                    error.code = 'FileNotFound'; // Mimic vscode.FileSystemError
+                    throw error;
+                }
                 return data;
             },
             stat: async (uri) => {
-                if (!fsStore.has(uri.toString())) throw new Error('File not found');
-                return { type: 1, ctime: 0, mtime: 0, size: 0 };
+                if (!fsStore.has(uri.toString())) {
+                    const error = new Error('File not found');
+                    error.code = 'FileNotFound'; // Mimic vscode.FileSystemError
+                    throw error;
+                }
+                return { type: mockVscode.FileType.File, ctime: 0, mtime: 0, size: fsStore.get(uri.toString()).length };
             }
         },
         getConfiguration: (section) => ({
@@ -147,4 +166,4 @@ const mockVscode = {
     }
 };
 
-module.exports = { mockVscode, fsStore, commandsMap };
+module.exports = { mockVscode, fsStore, commandsMap, setFileContent };

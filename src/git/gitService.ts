@@ -242,23 +242,83 @@ export class GitService {
         });
     }
 
-    async getBranches(cwd: string): Promise<string[]> {
+    async getBranches(cwd: string, filterFilePath?: string): Promise<string[]> {
         try {
             // Get local branches and remote branches, excluding HEAD
-            const { stdout } = await this.runGit(['branch', '-a', '--format=%(refname:short)'], cwd);
-            return stdout.split('\n')
+            const { stdout } = await this.runGit(['branch', '-a', '--format="%(refname:short)"'], cwd);
+            const branches = stdout.split('\n')
                 .map(b => b.trim().replace(/^remotes\//, ''))
+                .map(b => b.replace(/^"(.*)"$/, '$1')) // Remove quotes if they exist
                 .filter(b => b.length > 0 && !b.includes('/HEAD'));
+
+            if (filterFilePath) {
+                const canonicalPath = await this.getCanonicalPath(filterFilePath);
+                const filtered: string[] = [];
+                
+                // We check each branch if it has changes for the file compared to current HEAD
+                // Using parallel promises for efficiency
+                await Promise.all(branches.map(async (branch) => {
+                    try {
+                        // git rev-list --count HEAD..branch -- file
+                        // returns number of commits on 'branch' that are not in HEAD and changed 'file'
+                        const { stdout: count } = await this.runGit(['rev-list', '--count', `HEAD..${branch}`, '--', canonicalPath], cwd);
+                        if (parseInt(count.trim()) > 0) {
+                            filtered.push(branch);
+                        }
+                    } catch (e) {
+                        // If HEAD doesn't exist yet or other git error, we skip filtering for this branch
+                    }
+                }));
+                return filtered;
+            }
+
+            return branches;
         } catch (e) {
             return [];
         }
     }
 
-    async getCanonicalPath(filePath: string): Promise<string> {
+    async getRepoRoot(cwd: string): Promise<string> {
+        try {
+            const { stdout } = await this.runGit(['rev-parse', '--show-toplevel'], cwd);
+            return stdout.trim();
+        } catch (e) {
+            return cwd;
+        }
+    }
+
+    async getCanonicalPath(filePath: string, hash?: string): Promise<string> {
         const workspaceFolder = vscode.workspace.getWorkspaceFolder(vscode.Uri.file(filePath));
         if (!workspaceFolder) return filePath;
 
         try {
+            if (hash) {
+                // To find the path at a specific commit, we trace history from HEAD following renames
+                const { stdout } = await this.runGit(['log', '--follow', '--name-only', '--format=%H', '--', filePath], workspaceFolder.uri.fsPath);
+                
+                const lines = stdout.trim().split('\n');
+                // The log looks like:
+                // <hash1>
+                // <empty>
+                // <path1>
+                // <hash2>
+                // ...
+                for (let i = 0; i < lines.length; i++) {
+                    const line = lines[i].trim();
+                    if (line === hash) {
+                        // The path is usually 2 lines below if we have an empty line between hash and path
+                        // or 1 line below if it's compact. We find the first non-empty line after this hash.
+                        for (let j = i + 1; j < lines.length; j++) {
+                            const pathLine = lines[j].trim();
+                            if (pathLine.length > 0 && !pathLine.match(/^[0-9a-f]{40}$/)) {
+                                return pathLine;
+                            }
+                            if (pathLine.match(/^[0-9a-f]{40}$/)) break; // Found next commit without path?
+                        }
+                    }
+                }
+            }
+
             const { stdout } = await this.runGit(['ls-files', '--full-name', filePath], workspaceFolder.uri.fsPath);
             return stdout.trim() || path.relative(workspaceFolder.uri.fsPath, filePath).replace(/\\/g, '/');
         } catch (e) {
@@ -266,16 +326,21 @@ export class GitService {
         }
     }
 
+    async getRepoPath(filePath: string, hash?: string): Promise<string> {
+        return this.getCanonicalPath(filePath, hash);
+    }
+
     async getFileContentFromBranch(branch: string, relativePath: string, cwd: string): Promise<string> {
         // Git expects forward slashes
         const normalizedPath = relativePath.replace(/\\/g, '/');
         try {
-            // First check if file exists on that branch
-            const { stdout: exists } = await this.runGit(['ls-tree', '-r', branch, '--name-only', normalizedPath], cwd);
+            const repoPath = await this.getRepoPath(path.join(cwd, relativePath));
+            // First check if file exists on that branch using root-relative path
+            const { stdout: exists } = await this.runGit(['ls-tree', '-r', branch, '--name-only', repoPath], cwd);
             if (!exists.trim()) {
                 return ''; // File doesn't exist on this branch
             }
-            const { stdout } = await this.runGit(['show', `${branch}:${normalizedPath}`], cwd);
+            const { stdout } = await this.runGit(['show', `${branch}:${repoPath}`], cwd);
             return stdout;
         } catch (e) {
             console.error(`Failed to get content from branch ${branch}:`, e);

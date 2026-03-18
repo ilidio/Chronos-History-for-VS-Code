@@ -29,6 +29,7 @@ export interface ChronosConfig {
     exclude: string[];
     dailyBriefing?: boolean;
     language?: string;
+    respectGitIgnore?: boolean;
 }
 
 export interface GitHistoryConfig {
