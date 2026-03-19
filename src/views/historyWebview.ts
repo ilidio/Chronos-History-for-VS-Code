@@ -391,12 +391,14 @@ export class HistoryViewProvider {
         if (!useJetBrains) {
             const script = `(function() { const vscode = acquireVsCodeApi(); ${sharedScript} 
                 let snapshots = [], currentSelection = null, baseFilePath = '', explainEnabled = false, aiConfigured = false;
+                let selectedIndex = -1;
                 window.onload = () => { vscode.postMessage({ command: 'ready' }); updateLayoutButtons(); };
                 window.addEventListener('message', event => {
                     const msg = event.data;
                     if (msg.command === 'loadHistory') {
                         const el = document.getElementById('list'); el.innerHTML = '';
                         snapshots = msg.snapshots || []; baseFilePath = msg.filePath; currentSelection = msg.selection; explainEnabled = !!msg.explainEnabled; aiConfigured = !!msg.aiConfigured;
+                        const flatItems = [];
                         snapshots.forEach((s, i) => {
                             if (s.type === 'cluster') {
                                 const container = document.createElement('div'); container.className = 'cluster-container';
@@ -404,19 +406,46 @@ export class HistoryViewProvider {
                                 header.textContent = '📦 Session: ' + s.items.length + ' saves';
                                 header.onclick = () => document.getElementById('cluster-' + i).classList.toggle('expanded');
                                 const items = document.createElement('div'); items.id = 'cluster-' + i; items.className = 'cluster-items';
-                                s.items.forEach(item => items.appendChild(createEntry(item)));
+                                s.items.forEach(item => {
+                                    const entry = createEntry(item, flatItems.length);
+                                    items.appendChild(entry);
+                                    flatItems.push({ item, element: entry });
+                                });
                                 container.appendChild(header); container.appendChild(items); el.appendChild(container);
-                            } else el.appendChild(createEntry(s));
+                            } else {
+                                const entry = createEntry(s, flatItems.length);
+                                el.appendChild(entry);
+                                flatItems.push({ item: s, element: entry });
+                            }
                         });
+                        snapshots = flatItems; // Use flatItems for navigation
                     } else if (msg.command === 'showHtmlDiff') { renderDiff(msg.diff, msg.title, msg.params); }
                     else if (msg.command === 'explainResult') { 
                         const box = document.getElementById('explanationBox'); if (box) { box.style.display = 'block'; document.getElementById('explanationText').textContent = msg.text; }
                         document.getElementById('btnExplain').textContent = '✨ Explain';
                     }
                 });
-                function createEntry(s) {
+
+                window.addEventListener('keydown', e => {
+                    if (e.key === 'ArrowDown') { navigate(1); e.preventDefault(); }
+                    else if (e.key === 'ArrowUp') { navigate(-1); e.preventDefault(); }
+                });
+
+                function navigate(direction) {
+                    if (snapshots.length === 0) return;
+                    let next = selectedIndex + direction;
+                    if (next < 0) next = 0;
+                    if (next >= snapshots.length) next = snapshots.length - 1;
+                    if (next !== selectedIndex) {
+                        snapshots[next].element.click();
+                        snapshots[next].element.scrollIntoView({ block: 'nearest' });
+                    }
+                }
+
+                function createEntry(s, index) {
                     const div = document.createElement('div'); div.className = 'entry';
                     div.onclick = () => {
+                        selectedIndex = index;
                         document.querySelectorAll('.entry').forEach(e => e.classList.remove('selected'));
                         div.classList.add('selected');
                         vscode.postMessage({ command: 'openDiff', snapshot: s, baseFilePath: baseFilePath, currentSelection: currentSelection });
@@ -452,6 +481,7 @@ export class HistoryViewProvider {
 
         const jbScript = `(function() { const vscode = acquireVsCodeApi(); ${sharedScript}
             let baseFilePath = '', explainEnabled = false, aiConfigured = false;
+            let snapshots = [], selectedIndex = -1;
             window.onload = () => { vscode.postMessage({ command: 'ready' }); updateLayoutButtons(); };
             window.addEventListener('message', event => {
                 const msg = event.data;
@@ -459,9 +489,11 @@ export class HistoryViewProvider {
                     const el = document.getElementById('list'); el.innerHTML = '';
                     baseFilePath = msg.filePath; explainEnabled = !!msg.explainEnabled; aiConfigured = !!msg.aiConfigured;
                     const items = []; (msg.snapshots || []).forEach(s => { if (s.type === 'cluster') items.push(...s.items); else items.push(s); });
-                    items.forEach(s => {
+                    snapshots = [];
+                    items.forEach((s, index) => {
                         const tr = document.createElement('tr'); tr.className = 'jb-tr';
                         tr.onclick = () => {
+                            selectedIndex = index;
                             document.querySelectorAll('.jb-tr').forEach(r => r.classList.remove('selected'));
                             tr.classList.add('selected');
                             vscode.postMessage({ command: 'openDiff', snapshot: s, baseFilePath: baseFilePath });
@@ -471,6 +503,7 @@ export class HistoryViewProvider {
                         const labelStr = s.label || s.filePath.split(new RegExp('[\\\\\\\\/]', 'g')).pop();
                         tr.innerHTML = '<td class="jb-td">' + timeStr + '</td><td class="jb-td">' + escapeHtml(s.eventType) + '</td><td class="jb-td">' + escapeHtml(labelStr) + '</td>';
                         el.appendChild(tr);
+                        snapshots.push({ item: s, element: tr });
                     });
                 } else if (msg.command === 'showHtmlDiff') { renderDiff(msg.diff, msg.title, msg.params); }
                 else if (msg.command === 'explainResult') {
@@ -478,6 +511,23 @@ export class HistoryViewProvider {
                     document.getElementById('jbBtnExplain').textContent = '✨ Explain Changes';
                 }
             });
+
+            window.addEventListener('keydown', e => {
+                if (e.key === 'ArrowDown') { navigate(1); e.preventDefault(); }
+                else if (e.key === 'ArrowUp') { navigate(-1); e.preventDefault(); }
+            });
+
+            function navigate(direction) {
+                if (snapshots.length === 0) return;
+                let next = selectedIndex + direction;
+                if (next < 0) next = 0;
+                if (next >= snapshots.length) next = snapshots.length - 1;
+                if (next !== selectedIndex) {
+                    snapshots[next].element.click();
+                    snapshots[next].element.scrollIntoView({ block: 'nearest' });
+                }
+            }
+
             function updateDetails(s) {
                 document.getElementById('detailsPane').style.display = 'flex';
                 document.getElementById('detTime').textContent = new Date(s.timestamp).toLocaleString();
@@ -511,15 +561,18 @@ export class HistoryViewProvider {
         const script = `(function() { const vscode = acquireVsCodeApi(); 
             ${this._getGitSharedScript(htmlLayout, isSyncScroll)}
             let aiConfigured = false;
+            let commits = [], selectedIndex = -1;
             window.onload = () => { vscode.postMessage({ command: 'ready' }); updateLayoutButtons(); };
             window.addEventListener('message', event => {
                 const msg = event.data;
                 if (msg.command === 'loadCommits') {
                     const el = document.getElementById('list'); el.innerHTML = '';
                     aiConfigured = !!msg.aiConfigured;
-                    (msg.commits || []).forEach(c => {
+                    commits = [];
+                    (msg.commits || []).forEach((c, index) => {
                         const div = document.createElement('div'); div.className = 'entry';
                         div.onclick = () => {
+                            selectedIndex = index;
                             document.querySelectorAll('.entry').forEach(e => e.classList.remove('selected'));
                             div.classList.add('selected');
                             vscode.postMessage({ command: 'openDiff', commit: c, filePath: msg.filePath });
@@ -527,6 +580,7 @@ export class HistoryViewProvider {
                         };
                         div.innerHTML = '<b>' + escapeHtml(c.hash.substring(0,7)) + '</b> ' + escapeHtml(c.message);
                         el.appendChild(div);
+                        commits.push({ item: c, element: div, filePath: msg.filePath });
                     });
                 } else if (msg.command === 'showHtmlDiff') { renderDiff(msg.diff, msg.title, msg.params); }
                 else if (msg.command === 'explainResult') { 
@@ -534,6 +588,23 @@ export class HistoryViewProvider {
                     document.getElementById('btnExplain').textContent = '✨ Explain';
                 }
             });
+
+            window.addEventListener('keydown', e => {
+                if (e.key === 'ArrowDown') { navigate(1); e.preventDefault(); }
+                else if (e.key === 'ArrowUp') { navigate(-1); e.preventDefault(); }
+            });
+
+            function navigate(direction) {
+                if (commits.length === 0) return;
+                let next = selectedIndex + direction;
+                if (next < 0) next = 0;
+                if (next >= commits.length) next = commits.length - 1;
+                if (next !== selectedIndex) {
+                    commits[next].element.click();
+                    commits[next].element.scrollIntoView({ block: 'nearest' });
+                }
+            }
+
             function updateDetails(c, filePath) {
                 document.getElementById('detailsHeader').style.display = 'block';
                 document.getElementById('btnBranch').onclick = () => vscode.postMessage({ command: 'compareWithBranch', filePath: filePath, commit: c });

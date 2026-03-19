@@ -296,17 +296,22 @@ export class HistoryPanelProvider implements vscode.WebviewViewProvider {
 
             const script = `(function() { const vscode = acquireVsCodeApi(); ${sharedScript}
                 let aiConfigured = false;
+                let items = [], selectedIndex = -1, lastMsg = null;
                 window.addEventListener("message", event => {
                     const msg = event.data;
                     if (msg.command === "showHtmlDiff") { renderDiff(msg.diff, msg.title, msg.params); return; }
                     const el = document.getElementById("list"); if (!el) return; el.innerHTML = "";
-                    let items = [];
-                    if (msg.command === "loadLocal") { aiConfigured = !!msg.aiConfigured; (msg.snapshots || []).forEach(s => { if (s.type === "cluster") items.push(...s.items); else items.push(s); }); }
-                    else if (msg.command === "loadGit") { aiConfigured = !!msg.aiConfigured; items = msg.commits || []; }
-                    if (items.length === 0) { el.innerHTML = '<div class="empty-state">No history found.</div>'; return; }
-                    items.forEach(item => {
+                    let rawItems = []; lastMsg = msg;
+                    if (msg.command === "loadLocal") { aiConfigured = !!msg.aiConfigured; (msg.snapshots || []).forEach(s => { if (s.type === "cluster") rawItems.push(...s.items); else rawItems.push(s); }); }
+                    else if (msg.command === "loadGit") { aiConfigured = !!msg.aiConfigured; rawItems = msg.commits || []; }
+                    if (rawItems.length === 0) { el.innerHTML = '<div class="empty-state">No history found.</div>'; return; }
+                    items = [];
+                    rawItems.forEach((item, index) => {
                         const entry = document.createElement("div"); entry.className = "entry";
                         entry.onclick = () => {
+                            selectedIndex = index;
+                            document.querySelectorAll('.entry').forEach(e => e.classList.remove('selected'));
+                            entry.classList.add('selected');
                             if (msg.command === "loadLocal") vscode.postMessage({ command: "openDiff", snapshot: item, baseFilePath: msg.filePath, currentSelection: msg.selection });
                             else vscode.postMessage({ command: "openDiff", commit: item, baseFilePath: msg.filePath, currentSelection: msg.selection, compareWithCurrent: false });
                         };
@@ -315,8 +320,26 @@ export class HistoryPanelProvider implements vscode.WebviewViewProvider {
                         const msgStr = msg.command === "loadLocal" ? (item.label || item.filePath.split(new RegExp('[\\\\\\\\/]', 'g')).pop()) : item.message;
                         entry.innerHTML = '<div class="header"><span class="event-type">' + escapeHtml(typeStr) + '</span><span class="time">' + escapeHtml(timeStr) + '</span><span class="message">' + escapeHtml(msgStr) + '</span></div>';
                         el.appendChild(entry);
+                        items.push({ item, element: entry });
                     });
                 });
+
+                window.addEventListener('keydown', e => {
+                    if (e.key === 'ArrowDown') { navigate(1); e.preventDefault(); }
+                    else if (e.key === 'ArrowUp') { navigate(-1); e.preventDefault(); }
+                });
+
+                function navigate(direction) {
+                    if (items.length === 0) return;
+                    let next = selectedIndex + direction;
+                    if (next < 0) next = 0;
+                    if (next >= items.length) next = items.length - 1;
+                    if (next !== selectedIndex) {
+                        items[next].element.click();
+                        items[next].element.scrollIntoView({ block: 'nearest' });
+                    }
+                }
+
                 vscode.postMessage({ command: "ready" });
                 updateLayoutButtons();
             })();`;
@@ -362,6 +385,7 @@ export class HistoryPanelProvider implements vscode.WebviewViewProvider {
             (function() {
                 const vscode = acquireVsCodeApi(); ${sharedScript}
                 let aiConfigured = false;
+                let items = [], selectedIndex = -1;
                 window.addEventListener("message", event => {
                     const msg = event.data;
                     if (msg.command === "showHtmlDiff") { renderDiff(msg.diff, msg.title, msg.params); return; }
@@ -369,12 +393,14 @@ export class HistoryPanelProvider implements vscode.WebviewViewProvider {
                     if (msg.command === "loadLocal" || msg.command === "loadGit") {
                         aiConfigured = !!msg.aiConfigured;
                         const el = document.getElementById('list'); el.innerHTML = '';
-                        let items = [];
-                        if (msg.command === "loadLocal") { (msg.snapshots || []).forEach(s => { if (s.type === "cluster") items.push(...s.items); else items.push(s); }); }
-                        else { items = msg.commits || []; }
-                        items.forEach(item => {
+                        let rawItems = [];
+                        if (msg.command === "loadLocal") { (msg.snapshots || []).forEach(s => { if (s.type === "cluster") rawItems.push(...s.items); else rawItems.push(s); }); }
+                        else { rawItems = msg.commits || []; }
+                        items = [];
+                        rawItems.forEach((item, index) => {
                             const tr = document.createElement('tr'); tr.className = 'jb-tr';
                             tr.onclick = () => {
+                                selectedIndex = index;
                                 document.querySelectorAll('.jb-tr').forEach(r => r.classList.remove('selected'));
                                 tr.classList.add('selected');
                                 if (msg.command === "loadLocal") {
@@ -390,9 +416,27 @@ export class HistoryPanelProvider implements vscode.WebviewViewProvider {
                             const labelStr = msg.command === 'loadLocal' ? (item.label || item.filePath.split(new RegExp('[\\\\\\\\/]', 'g')).pop()) : item.message;
                             tr.innerHTML = '<td class="jb-td col-time">' + escapeHtml(timeStr) + '</td><td class="jb-td col-type">' + escapeHtml(typeStr) + '</td><td class="jb-td">' + escapeHtml(labelStr) + '</td>';
                             el.appendChild(tr);
+                            items.push({ item, element: tr });
                         });
                     }
                 });
+
+                window.addEventListener('keydown', e => {
+                    if (e.key === 'ArrowDown') { navigate(1); e.preventDefault(); }
+                    else if (e.key === 'ArrowUp') { navigate(-1); e.preventDefault(); }
+                });
+
+                function navigate(direction) {
+                    if (items.length === 0) return;
+                    let next = selectedIndex + direction;
+                    if (next < 0) next = 0;
+                    if (next >= items.length) next = items.length - 1;
+                    if (next !== selectedIndex) {
+                        items[next].element.click();
+                        items[next].element.scrollIntoView({ block: 'nearest' });
+                    }
+                }
+
                 function updateDetails(item, mode, filePath) {
                     document.getElementById('detailsPane').style.display = 'flex';
                     document.getElementById('explanationBox').style.display = 'none';
