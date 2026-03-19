@@ -238,16 +238,15 @@ export function activate(context: vscode.ExtensionContext) {
             vscode.commands.registerCommand('chronos.compareWithBranch', compareWithBranch),
             vscode.commands.registerCommand('chronos.compareWithBranchVersion', compareWithBranchVersion),
             vscode.commands.registerCommand('_chronos.getGitDiff', async (commit, filePath) => {
-                if (commit.diff) return commit.diff;
                 try {
-                    // Try to get diff from parent if not present
+                    // Try to get diff with full context
                     const workspaceFolder = vscode.workspace.getWorkspaceFolder(vscode.Uri.file(filePath));
-                    if (!workspaceFolder) return '';
+                    if (!workspaceFolder) return commit.diff || '';
                     const canonicalPath = await gitService.getCanonicalPath(filePath, commit.hash);
-                    const { stdout } = await gitService.runGit(['show', '--pretty=format:', commit.hash, '--', canonicalPath], workspaceFolder.uri.fsPath);
+                    const { stdout } = await gitService.runGit(['show', '-U999999', '--pretty=format:', commit.hash, '--', canonicalPath], workspaceFolder.uri.fsPath);
                     return stdout;
                 } catch (e) {
-                    return '';
+                    return commit.diff || '';
                 }
             }),
             vscode.commands.registerCommand('_chronos.savePatch', async (diffText: string) => {

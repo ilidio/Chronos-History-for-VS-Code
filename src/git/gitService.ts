@@ -204,7 +204,7 @@ export class GitService {
 
     async getDiff(file1: string, file2: string): Promise<string> {
         // git diff --no-index <file1> <file2>
-        const args = ['-c', 'color.ui=false', 'diff', '--no-index', file1, file2];
+        const args = ['-c', 'color.ui=false', 'diff', '--unified=999999', '--no-index', file1, file2];
         
         return new Promise((resolve, reject) => {
             // We use cwd as the dirname of one of the files or root, doesn't matter much for --no-index
