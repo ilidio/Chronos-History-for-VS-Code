@@ -496,28 +496,47 @@ export class HistoryViewProvider {
                     div.innerHTML = '<div class="header"><span class="event-type">' + escapeHtml(s.eventType) + '</span><span>' + timeStr + '</span></div><div>' + escapeHtml(labelStr) + '</div>';
                     return div;
                 }
-                function updateDetails(s) {
-                    document.getElementById('detailsHeader').style.display = 'block';
-                    document.getElementById('btnRestore').onclick = () => vscode.postMessage({ command: 'restore', snapshotId: s.id, filePath: s.filePath });
-                    document.getElementById('btnBranch').onclick = () => vscode.postMessage({ command: 'compareWithBranch', filePath: baseFilePath, snapshot: s });
-                    document.getElementById('btnBranchVersion').onclick = () => vscode.postMessage({ command: 'compareWithBranchVersion', filePath: baseFilePath, snapshot: s });
-                    document.getElementById('btnLabel').onclick = () => { const name = prompt("Enter label:"); if (name) vscode.postMessage({ command: 'putLabel', name, filePath: baseFilePath }); };
-                    if (explainEnabled) {
-                        document.getElementById('btnExplain').style.display = 'block';
-                        if (!aiConfigured) {
-                            document.getElementById('btnExplain').textContent = '✨ Explain (Key Required)';
-                            document.getElementById('btnExplain').style.opacity = '0.5';
-                            document.getElementById('btnExplain').onclick = () => { alert("Please add a Google Gemini API Key in extension settings to use AI features."); };
-                        } else {
-                            document.getElementById('btnExplain').textContent = '✨ Explain';
-                            document.getElementById('btnExplain').style.opacity = '1';
-                            document.getElementById('btnExplain').onclick = () => { document.getElementById('btnExplain').textContent = 'Thinking...'; vscode.postMessage({ command: 'explain', snapshot: s }); };
-                        }
-                    } else document.getElementById('btnExplain').style.display = 'none';
+            function updateDetails(s) {
+                const detailsHeader = document.getElementById('detailsHeader');
+                if (detailsHeader) {
+                    detailsHeader.style.display = 'flex';
+                    detailsHeader.style.alignItems = 'center';
+                    detailsHeader.style.justifyContent = 'space-between';
+                    detailsHeader.style.padding = '8px 12px';
+                    detailsHeader.style.background = 'var(--vscode-editor-lineHighlightBackground)';
+                    detailsHeader.style.borderBottom = '1px solid var(--vscode-panel-border)';
                 }
-            })();`;
-            return `<!DOCTYPE html><html><head><meta charset="UTF-8"><style>body { margin: 0; display: flex; flex-direction: ${containerFlex}; height: 100vh; font-family: var(--vscode-font-family); color: var(--vscode-foreground); } .sidebar { flex: 1; overflow-y: auto; background: var(--vscode-sideBar-background); min-height: 0; } .list { padding: 10px; } ${styles}</style></head><body><div id="diffContainer" class="diff-container" style="order: ${diffOrder}; flex: 1; min-height: 200px;">${diffHeaderHtml}<div id="diffContent" class="diff-content"></div></div><div class="sidebar" style="${sidebarStyle}"><div id="detailsHeader" style="display:none; border-bottom: 1px solid var(--vscode-panel-border); padding: 8px;"><div class="actions"><button id="btnRestore">Restore</button><button id="btnBranch">Branch</button><button id="btnBranchVersion">Version</button><button id="btnLabel">Label</button><button id="btnExplain" class="btn-explain">✨ Explain</button></div><div id="explanationBox" class="explanation-box"><div class="explanation-close" onclick="this.parentElement.style.display='none'">✕</div><div id="explanationText"></div></div></div><div id="list" class="list"></div></div><script>${script}</script></body></html>`;
-        }
+                
+                const restoreBtn = document.getElementById('btnRestore');
+                if (restoreBtn) restoreBtn.onclick = () => vscode.postMessage({ command: 'restore', snapshotId: s.id, filePath: s.filePath });
+                
+                const branchBtn = document.getElementById('btnBranch');
+                if (branchBtn) branchBtn.onclick = () => vscode.postMessage({ command: 'compareWithBranch', filePath: baseFilePath, snapshot: s });
+                
+                const versionBtn = document.getElementById('btnBranchVersion');
+                if (versionBtn) versionBtn.onclick = () => vscode.postMessage({ command: 'compareWithBranchVersion', filePath: baseFilePath, snapshot: s });
+                
+                const labelBtn = document.getElementById('btnLabel');
+                if (labelBtn) labelBtn.onclick = () => { const name = prompt("Enter label:"); if (name) vscode.postMessage({ command: 'putLabel', name, filePath: baseFilePath }); };
+                
+                const explainBtn = document.getElementById('btnExplain');
+                if (explainBtn) {
+                    if (explainEnabled) {
+                        explainBtn.style.display = 'block';
+                        if (!aiConfigured) {
+                            explainBtn.textContent = '✨ Explain (Key Required)';
+                            explainBtn.style.opacity = '0.5';
+                            explainBtn.onclick = () => { alert("Please add a Google Gemini API Key in extension settings to use AI features."); };
+                        } else {
+                            explainBtn.textContent = '✨ Explain';
+                            explainBtn.style.opacity = '1';
+                            explainBtn.onclick = () => { explainBtn.textContent = 'Thinking...'; vscode.postMessage({ command: 'explain', snapshot: s }); };
+                        }
+                    } else explainBtn.style.display = 'none';
+                }
+            }
+        })();`;
+        return `<!DOCTYPE html><html><head><meta charset="UTF-8"><style>body { margin: 0; display: flex; flex-direction: ${containerFlex}; height: 100vh; font-family: var(--vscode-font-family); color: var(--vscode-foreground); } .jb-main { flex: 1; overflow-y: auto; background: var(--vscode-sideBar-background); min-height: 0; } .list { padding: 10px; } ${styles}</style></head><body><div id="diffContainer" class="diff-container" style="order: ${diffOrder}; flex: 1; min-height: 200px;">${diffHeaderHtml}<div id="detailsHeader" style="display:none;"><div style="display:flex; gap:8px; align-items:center;"><span id="detInfo" style="font-size:0.85em; font-weight:bold; opacity:0.8;"></span></div><div class="actions" style="border:none; padding:0; background:transparent;"><button id="btnRestore">Restore</button><button id="btnBranch">Branch</button><button id="btnBranchVersion">Version</button><button id="btnLabel">Label</button><button id="btnExplain" class="btn-explain">✨ Explain</button></div></div><div id="explanationBox" class="explanation-box" style="margin: 8px 12px;"><div class="explanation-close" onclick="this.parentElement.style.display='none'">✕</div><div id="explanationText"></div></div><div id="diffContent" class="diff-content"></div></div><div class="jb-main" style="${sidebarStyle}"><div id="list" class="list"></div></div><script>${script}</script></body></html>`;        }
 
         const jbScript = `(function() { const vscode = acquireVsCodeApi(); ${sharedScript}
             let baseFilePath = '', explainEnabled = false, aiConfigured = false;
@@ -735,22 +754,38 @@ export class HistoryViewProvider {
             }
 
             function updateDetails(c, filePath) {
-                document.getElementById('detailsHeader').style.display = 'block';
-                document.getElementById('btnBranch').onclick = () => vscode.postMessage({ command: 'compareWithBranch', filePath: filePath, commit: c });
-                document.getElementById('btnBranchVersion').onclick = () => vscode.postMessage({ command: 'compareWithBranchVersion', filePath: filePath, commit: c });
+                const detailsHeader = document.getElementById('detailsHeader');
+                if (detailsHeader) {
+                    detailsHeader.style.display = 'flex';
+                    detailsHeader.style.alignItems = 'center';
+                    detailsHeader.style.justifyContent = 'space-between';
+                    detailsHeader.style.padding = '8px 12px';
+                    detailsHeader.style.background = 'var(--vscode-editor-lineHighlightBackground)';
+                    detailsHeader.style.borderBottom = '1px solid var(--vscode-panel-border)';
+                }
+                document.getElementById('detInfo').textContent = c.hash.substring(0, 7) + ' - ' + c.author;
                 
-                if (!aiConfigured) {
-                    document.getElementById('btnExplain').textContent = '✨ Explain (Key Required)';
-                    document.getElementById('btnExplain').style.opacity = '0.5';
-                    document.getElementById('btnExplain').onclick = () => { alert("Please add a Google Gemini API Key in extension settings to use AI features."); };
-                } else {
-                    document.getElementById('btnExplain').textContent = '✨ Explain';
-                    document.getElementById('btnExplain').style.opacity = '1';
-                    document.getElementById('btnExplain').onclick = () => { document.getElementById('btnExplain').textContent = 'Thinking...'; vscode.postMessage({ command: 'explain', commit: c }); };
+                const branchBtn = document.getElementById('btnBranch');
+                if (branchBtn) branchBtn.onclick = () => vscode.postMessage({ command: 'compareWithBranch', filePath: filePath, commit: c });
+                
+                const versionBtn = document.getElementById('btnBranchVersion');
+                if (versionBtn) versionBtn.onclick = () => vscode.postMessage({ command: 'compareWithBranchVersion', filePath: filePath, commit: c });
+                
+                const explainBtn = document.getElementById('btnExplain');
+                if (explainBtn) {
+                    if (!aiConfigured) {
+                        explainBtn.textContent = '✨ Explain (Key Required)';
+                        explainBtn.style.opacity = '0.5';
+                        explainBtn.onclick = () => { alert("Please add a Google Gemini API Key in extension settings to use AI features."); };
+                    } else {
+                        explainBtn.textContent = '✨ Explain';
+                        explainBtn.style.opacity = '1';
+                        explainBtn.onclick = () => { explainBtn.textContent = 'Thinking...'; vscode.postMessage({ command: 'explain', commit: c }); };
+                    }
                 }
             }
         })();`;
-        return `<!DOCTYPE html><html><head><meta charset="UTF-8"><style>${styles} body { margin: 0; display: flex; flex-direction: ${containerFlex}; height: 100vh; width: 100vw; font-family: var(--vscode-font-family); color: var(--vscode-foreground); overflow: hidden; } .jb-main { display: flex; flex: 1; overflow: hidden; min-height: 0; } .jb-table-wrapper { flex: 1; overflow: auto; min-height: 0; border-right: 1px solid var(--vscode-panel-border); } .sidebar { width: 300px; display: flex; flex-direction: column; background: var(--vscode-sideBar-background); overflow: hidden; min-height: 0; } </style></head><body><div id="diffContainer" class="diff-container" style="order: ${diffOrder}; flex: 1; min-height: 200px;">
+        return `<!DOCTYPE html><html><head><meta charset="UTF-8"><style>${styles} body { margin: 0; display: flex; flex-direction: ${containerFlex}; height: 100vh; width: 100vw; font-family: var(--vscode-font-family); color: var(--vscode-foreground); overflow: hidden; } .jb-main { display: flex; flex: 1; overflow: hidden; min-height: 0; } .jb-table-wrapper { flex: 1; overflow: auto; min-height: 0; } </style></head><body><div id="diffContainer" class="diff-container" style="order: ${diffOrder}; flex: 1; min-height: 200px;">
             <div class="diff-header"><span id="diffTitle">Git Diff</span>
                 <div style="display: flex; gap: 4px; align-items: center;">
                     <div style="display: flex; border: 1px solid var(--vscode-panel-border); border-radius: 4px; overflow: hidden; margin-right: 4px;">
@@ -763,8 +798,9 @@ export class HistoryViewProvider {
                     <button onclick="window.closeDiff()" class="btn-action" style="padding: 2px 4px; background: transparent; color: var(--vscode-foreground); min-width: 24px; height: 28px;">✕</button>
                 </div>
             </div>
-            <div id="diffInfoBar" class="diff-info-bar" style="display: none;"><span id="diffInfoTag" class="diff-info-tag"></span><span id="diffInfoPath" class="diff-info-path" style="margin-left:10px; font-family:monospace; opacity:0.8;"></span></div>
-            <div id="diffContent" class="diff-content"></div></div><div class="jb-main"><div class="jb-table-wrapper"><table class="jb-table"><thead><tr><th class="jb-th" data-column="hash" data-label="Version" onclick="sortBy('hash')" style="width: 80px;">Version</th><th class="jb-th" data-column="date" data-label="Date" onclick="sortBy('date')" style="width: 150px;">Date</th><th class="jb-th" data-column="author" data-label="Author" onclick="sortBy('author')" style="width: 120px;">Author</th><th class="jb-th" data-column="message" data-label="Commit Message" onclick="sortBy('message')">Commit Message</th></tr></thead><tbody id="list"></tbody></table></div><div class="sidebar" style="${sidebarStyle}"><div id="detailsHeader" style="display:none; border-bottom: 1px solid var(--vscode-panel-border); padding: 8px;"><div class="actions"><button id="btnBranch">Branch</button><button id="btnBranchVersion">Version</button><button id="btnExplain" class="btn-explain">✨ Explain</button></div><div id="explanationBox" class="explanation-box"><div class="explanation-close" onclick="this.parentElement.style.display='none'">✕</div><div id="explanationText"></div></div></div></div></div><script>${script}</script></body></html>`;
+            <div id="detailsHeader" style="display:none;"><div style="display:flex; gap:8px; align-items:center;"><span id="detInfo" style="font-size:0.85em; font-weight:bold; opacity:0.8;"></span></div><div class="actions" style="border:none; padding:0; background:transparent;"><button id="btnBranch">Branch</button><button id="btnBranchVersion">Version</button><button id="btnExplain" class="btn-explain">✨ Explain</button></div></div>
+            <div id="explanationBox" class="explanation-box" style="margin: 8px 12px;"><div class="explanation-close" onclick="this.parentElement.style.display='none'">✕</div><div id="explanationText"></div></div>
+            <div id="diffContent" class="diff-content"></div></div><div class="jb-main" style="flex:1; border-left:1px solid var(--vscode-panel-border); border-right:1px solid var(--vscode-panel-border);"><div class="jb-table-wrapper"><table class="jb-table"><thead><tr><th class="jb-th" data-column="hash" data-label="Version" onclick="sortBy('hash')" style="width: 80px;">Version</th><th class="jb-th" data-column="date" data-label="Date" onclick="sortBy('date')" style="width: 150px;">Date</th><th class="jb-th" data-column="author" data-label="Author" onclick="sortBy('author')" style="width: 120px;">Author</th><th class="jb-th" data-column="message" data-label="Commit Message" onclick="sortBy('message')">Commit Message</th></tr></thead><tbody id="list"></tbody></table></div></div><script>${script}</script></body></html>`;
     }
 
     private _getGitSharedScript(htmlLayout: string, isSyncScroll: boolean) {

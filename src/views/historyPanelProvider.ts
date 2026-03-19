@@ -387,19 +387,12 @@ export class HistoryPanelProvider implements vscode.WebviewViewProvider {
         <body>
             <div id="diffContainer" class="diff-container" style="order: ${diffOrder}; ${diffBorder} flex: 1; min-height: 200px;">
                 ${diffHeaderHtml}
+                <div id="detailsHeader" style="display:none;"><div style="display:flex; gap:8px; align-items:center;"><span id="detTime" style="font-size:0.85em; font-weight:bold; opacity:0.8;"></span></div><div class="actions" style="border:none; padding:0; background:transparent;"><button id="jbBtnRestore">Restore</button><button id="jbBtnBranch">Branch</button><button id="jbBtnBranchVersion">Version</button><button id="jbBtnExplain">✨ Explain</button></div></div>
+                <div id="explanationBox" style="margin: 8px 12px; font-size: 0.85em; white-space: pre-wrap; display: none; background: var(--vscode-editor-lineHighlightBackground); padding: 8px; border-radius: 4px;"></div>
                 <div id="diffContent" class="diff-content"></div>
             </div>
             <div class="jb-main">
                 <div class="jb-table-wrapper"><table class="jb-table"><thead><tr id="headerRow"></tr></thead><tbody id="list"></tbody></table></div>
-                <div id="detailsPane" class="jb-details-pane" style="display: none;">
-                    <div class="jb-label">Selected</div><div id="detTime" class="jb-value"></div>
-                    <div class="jb-label">Type</div><div id="detType" class="jb-value"></div>
-                    <button id="jbBtnRestore" class="jb-btn">Restore</button>
-                    <button id="jbBtnBranch" class="jb-btn" style="margin-top: 4px;">Compare Branch...</button>
-                    <button id="jbBtnBranchVersion" class="jb-btn" style="margin-top: 4px;">Compare Version...</button>
-                    <button id="jbBtnExplain" class="jb-btn" style="margin-top: 4px;">✨ Explain</button>
-                    <div id="explanationBox" style="margin-top: 8px; font-size: 0.85em; white-space: pre-wrap; display: none;"></div>
-                </div>
             </div>
         <script>
             (function() {
@@ -544,11 +537,18 @@ export class HistoryPanelProvider implements vscode.WebviewViewProvider {
                 }
 
                 function updateDetails(item, mode, filePath) {
-                    document.getElementById('detailsPane').style.display = 'flex';
+                    const detailsHeader = document.getElementById('detailsHeader');
+                    if (detailsHeader) {
+                        detailsHeader.style.display = 'flex';
+                        detailsHeader.style.alignItems = 'center';
+                        detailsHeader.style.justifyContent = 'space-between';
+                        detailsHeader.style.padding = '8px 12px';
+                        detailsHeader.style.background = 'var(--vscode-editor-lineHighlightBackground)';
+                        detailsHeader.style.borderBottom = '1px solid var(--vscode-panel-border)';
+                    }
                     document.getElementById('explanationBox').style.display = 'none';
                     if (mode === 'local') {
                         document.getElementById('detTime').textContent = new Date(item.timestamp).toLocaleString();
-                        document.getElementById('detType').textContent = item.eventType;
                         document.getElementById('jbBtnRestore').style.display = 'block';
                         document.getElementById('jbBtnRestore').onclick = () => vscode.postMessage({ command: 'restore', snapshotId: item.id, filePath: item.filePath });
                         document.getElementById('jbBtnBranch').onclick = () => vscode.postMessage({ command: 'compareWithBranch', filePath: filePath, snapshot: item });
@@ -564,8 +564,7 @@ export class HistoryPanelProvider implements vscode.WebviewViewProvider {
                             document.getElementById('jbBtnExplain').onclick = () => { document.getElementById('jbBtnExplain').textContent = 'Thinking...'; vscode.postMessage({ command: 'explain', snapshot: item }); };
                         }
                     } else {
-                        document.getElementById('detTime').textContent = item.date;
-                        document.getElementById('detType').textContent = item.hash.substring(0, 7);
+                        document.getElementById('detTime').textContent = item.hash.substring(0, 7) + ' - ' + item.author;
                         document.getElementById('jbBtnRestore').style.display = 'none';
                         document.getElementById('jbBtnBranch').onclick = () => vscode.postMessage({ command: 'compareWithBranch', filePath: filePath, commit: item });
                         document.getElementById('jbBtnBranchVersion').onclick = () => vscode.postMessage({ command: 'compareWithBranchVersion', filePath: filePath, commit: item });
