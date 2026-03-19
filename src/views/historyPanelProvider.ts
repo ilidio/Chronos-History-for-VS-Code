@@ -292,7 +292,7 @@ export class HistoryPanelProvider implements vscode.WebviewViewProvider {
         `;
 
         if (!useJetBrains) {
-            const style = `body { margin: 0; padding: 0; color: var(--vscode-editor-foreground); background-color: var(--vscode-editor-background); font-family: var(--vscode-font-family); height: 100vh; overflow: hidden; display: flex; flex-direction: ${containerFlex}; } .list { flex: 1; overflow-y: auto; } .entry { padding: 8px 12px; border-bottom: 1px solid var(--vscode-panel-border); cursor: pointer; display: flex; align-items: center; gap: 10px; } .entry:hover { background-color: var(--vscode-list-hoverBackground); } .header { display: flex; align-items: center; gap: 10px; flex: 1; min-width: 0; } .event-type { font-weight: bold; text-transform: uppercase; font-size: 0.8em; opacity: 0.8; min-width: 60px; } .time { font-family: monospace; opacity: 0.9; min-width: 110px; } .message { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-weight: 500; } .empty-state { padding: 20px; text-align: center; opacity: 0.5; } ${sharedStyle}`;
+            const style = `body { margin: 0; padding: 0; color: var(--vscode-editor-foreground); background-color: var(--vscode-editor-background); font-family: var(--vscode-font-family); height: 100vh; overflow: hidden; display: flex; flex-direction: ${containerFlex}; } .list { flex: 1; overflow-y: auto; min-height: 0; } .entry { padding: 8px 12px; border-bottom: 1px solid var(--vscode-panel-border); cursor: pointer; display: flex; align-items: center; gap: 10px; } .entry:hover { background-color: var(--vscode-list-hoverBackground); } .header { display: flex; align-items: center; gap: 10px; flex: 1; min-width: 0; } .event-type { font-weight: bold; text-transform: uppercase; font-size: 0.8em; opacity: 0.8; min-width: 60px; } .time { font-family: monospace; opacity: 0.9; min-width: 110px; } .message { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-weight: 500; } .empty-state { padding: 20px; text-align: center; opacity: 0.5; } ${sharedStyle}`;
 
             const script = `(function() { const vscode = acquireVsCodeApi(); ${sharedScript}
                 let aiConfigured = false;
@@ -326,9 +326,9 @@ export class HistoryPanelProvider implements vscode.WebviewViewProvider {
 
         return `<!DOCTYPE html><html><head><meta charset="UTF-8"><style>
             body { margin: 0; padding: 0; color: var(--vscode-editor-foreground); background-color: var(--vscode-editor-background); font-family: var(--vscode-font-family); height: 100vh; overflow: hidden; display: flex; flex-direction: ${containerFlex}; }
-            .jb-main { display: flex; flex: 1; overflow: hidden; order: 0; }
-            .jb-table-wrapper { flex: 1; overflow: auto; border-right: 1px solid var(--vscode-panel-border); }
-            .jb-details-pane { width: 250px; display: flex; flex-direction: column; background: var(--vscode-sideBar-background); padding: 8px; gap: 8px; overflow-y: auto; border-left: 1px solid var(--vscode-panel-border); }
+            .jb-main { display: flex; flex: 1; overflow: hidden; order: 0; min-height: 0; }
+            .jb-table-wrapper { flex: 1; overflow: auto; border-right: 1px solid var(--vscode-panel-border); min-height: 0; }
+            .jb-details-pane { width: 250px; display: flex; flex-direction: column; background: var(--vscode-sideBar-background); padding: 8px; gap: 8px; overflow-y: auto; border-left: 1px solid var(--vscode-panel-border); min-height: 0; }
             .jb-table { width: 100%; border-collapse: collapse; table-layout: fixed; }
             .jb-tr { cursor: pointer; border-bottom: 1px solid rgba(128,128,128,0.05); }
             .jb-tr:hover { background-color: var(--vscode-list-hoverBackground); }
