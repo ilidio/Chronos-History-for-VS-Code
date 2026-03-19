@@ -161,6 +161,25 @@ export class HistoryPanelProvider implements vscode.WebviewViewProvider {
             .diff-info-bar { background: var(--vscode-editor-lineHighlightBackground); padding: 4px 8px; border-bottom: 1px solid var(--vscode-panel-border); display: flex; align-items: center; gap: 8px; font-size: 0.75em; }
             .diff-info-path { font-family: var(--vscode-editor-font-family); opacity: 0.9; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
             .diff-info-tag { background: var(--vscode-badge-background); color: var(--vscode-badge-foreground); padding: 1px 4px; border-radius: 2px; font-size: 0.85em; font-weight: bold; }
+
+            .jb-th { 
+                padding: 4px 8px; 
+                text-align: left; 
+                font-size: 0.75em; 
+                font-weight: bold; 
+                background: var(--vscode-sideBar-background); 
+                border-bottom: 1px solid var(--vscode-panel-border); 
+                position: sticky; 
+                top: 0; 
+                z-index: 10;
+                cursor: pointer;
+                user-select: none;
+                white-space: nowrap;
+                overflow: hidden;
+                text-overflow: ellipsis;
+            }
+            .jb-th:hover { background: var(--vscode-list-hoverBackground); }
+            .jb-th.active-sort { color: var(--vscode-textLink-foreground); }
         `;
 
         const sharedScript = `
@@ -306,22 +325,23 @@ export class HistoryPanelProvider implements vscode.WebviewViewProvider {
                     else if (msg.command === "loadGit") { aiConfigured = !!msg.aiConfigured; rawItems = msg.commits || []; }
                     if (rawItems.length === 0) { el.innerHTML = '<div class="empty-state">No history found.</div>'; return; }
                     items = [];
-                    rawItems.forEach((item, index) => {
-                        const entry = document.createElement("div"); entry.className = "entry";
-                        entry.onclick = () => {
-                            selectedIndex = index;
-                            document.querySelectorAll('.entry').forEach(e => e.classList.remove('selected'));
-                            entry.classList.add('selected');
-                            if (msg.command === "loadLocal") vscode.postMessage({ command: "openDiff", snapshot: item, baseFilePath: msg.filePath, currentSelection: msg.selection });
-                            else vscode.postMessage({ command: "openDiff", commit: item, baseFilePath: msg.filePath, currentSelection: msg.selection, compareWithCurrent: false });
-                        };
-                        const typeStr = msg.command === "loadLocal" ? item.eventType : (item.hash ? item.hash.substring(0, 7) : 'Git');
-                        const timeStr = msg.command === "loadLocal" ? new Date(item.timestamp).toLocaleTimeString(undefined, {hour:'2-digit',minute:'2-digit',second:'2-digit'}) : item.date;
-                        const msgStr = msg.command === "loadLocal" ? (item.label || item.filePath.split(new RegExp('[\\\\\\\\/]', 'g')).pop()) : item.message;
-                        entry.innerHTML = '<div class="header"><span class="event-type">' + escapeHtml(typeStr) + '</span><span class="time">' + escapeHtml(timeStr) + '</span><span class="message">' + escapeHtml(msgStr) + '</span></div>';
-                        el.appendChild(entry);
-                        items.push({ item, element: entry });
-                    });
+                        rawItems.forEach((item, index) => {
+                            const entry = document.createElement("div"); entry.className = "entry";
+                            entry.onclick = () => {
+                                selectedIndex = index;
+                                document.querySelectorAll('.entry').forEach(e => e.classList.remove('selected'));
+                                entry.classList.add('selected');
+                                if (msg.command === "loadLocal") vscode.postMessage({ command: "openDiff", snapshot: item, baseFilePath: msg.filePath, currentSelection: msg.selection });
+                                else vscode.postMessage({ command: "openDiff", commit: item, baseFilePath: msg.filePath, currentSelection: msg.selection, compareWithCurrent: false });
+                            };
+                            const typeStr = msg.command === "loadLocal" ? item.eventType : (item.hash ? item.hash.substring(0, 7) : 'Git');
+                            const timeStr = msg.command === "loadLocal" ? new Date(item.timestamp).toLocaleTimeString(undefined, {hour:'2-digit',minute:'2-digit',second:'2-digit'}) : item.date;
+                            const authorStr = msg.command === "loadGit" ? (' | ' + item.author) : '';
+                            const msgStr = msg.command === "loadLocal" ? (item.label || item.filePath.split(new RegExp('[\\\\\\\\/]', 'g')).pop()) : item.message;
+                            entry.innerHTML = '<div class="header"><span class="event-type">' + escapeHtml(typeStr) + '</span><span class="time">' + escapeHtml(timeStr) + escapeHtml(authorStr) + '</span><span class="message">' + escapeHtml(msgStr) + '</span></div>';
+                            el.appendChild(entry);
+                            items.push({ item, element: entry });
+                        });
                 });
 
                 window.addEventListener('keydown', e => {
@@ -370,7 +390,7 @@ export class HistoryPanelProvider implements vscode.WebviewViewProvider {
                 <div id="diffContent" class="diff-content"></div>
             </div>
             <div class="jb-main">
-                <div class="jb-table-wrapper"><table class="jb-table"><tbody id="list"></tbody></table></div>
+                <div class="jb-table-wrapper"><table class="jb-table"><thead><tr id="headerRow"></tr></thead><tbody id="list"></tbody></table></div>
                 <div id="detailsPane" class="jb-details-pane" style="display: none;">
                     <div class="jb-label">Selected</div><div id="detTime" class="jb-value"></div>
                     <div class="jb-label">Type</div><div id="detType" class="jb-value"></div>
@@ -386,40 +406,126 @@ export class HistoryPanelProvider implements vscode.WebviewViewProvider {
                 const vscode = acquireVsCodeApi(); ${sharedScript}
                 let aiConfigured = false;
                 let items = [], selectedIndex = -1;
+                let currentMode = 'local';
+                let currentSort = { column: 'date', direction: 'desc' };
+                let lastMsg = null;
+
                 window.addEventListener("message", event => {
                     const msg = event.data;
                     if (msg.command === "showHtmlDiff") { renderDiff(msg.diff, msg.title, msg.params); return; }
                     if (msg.command === "explainResult") { const box = document.getElementById('explanationBox'); box.style.display = 'block'; box.textContent = msg.text; document.getElementById('jbBtnExplain').textContent = '✨ Explain'; return; }
                     if (msg.command === "loadLocal" || msg.command === "loadGit") {
+                        lastMsg = msg;
                         aiConfigured = !!msg.aiConfigured;
+                        currentMode = msg.command === "loadLocal" ? 'local' : 'git';
+                        if (currentMode === 'local') { currentSort.column = 'timestamp'; }
+                        else { currentSort.column = 'date'; }
+                        currentSort.direction = 'desc';
+
                         const el = document.getElementById('list'); el.innerHTML = '';
                         let rawItems = [];
-                        if (msg.command === "loadLocal") { (msg.snapshots || []).forEach(s => { if (s.type === "cluster") rawItems.push(...s.items); else rawItems.push(s); }); }
+                        if (currentMode === "local") { (msg.snapshots || []).forEach(s => { if (s.type === "cluster") rawItems.push(...s.items); else rawItems.push(s); }); }
                         else { rawItems = msg.commits || []; }
-                        items = [];
-                        rawItems.forEach((item, index) => {
-                            const tr = document.createElement('tr'); tr.className = 'jb-tr';
-                            tr.onclick = () => {
-                                selectedIndex = index;
-                                document.querySelectorAll('.jb-tr').forEach(r => r.classList.remove('selected'));
-                                tr.classList.add('selected');
-                                if (msg.command === "loadLocal") {
-                                    vscode.postMessage({ command: "openDiff", snapshot: item, baseFilePath: msg.filePath });
-                                    updateDetails(item, 'local', msg.filePath);
-                                } else {
-                                    vscode.postMessage({ command: "openDiff", commit: item, baseFilePath: msg.filePath, compareWithCurrent: false });
-                                    updateDetails(item, 'git', msg.filePath);
-                                }
-                            };
-                            const timeStr = msg.command === 'loadLocal' ? new Date(item.timestamp).toLocaleTimeString(undefined, {hour:'2-digit',minute:'2-digit',second:'2-digit'}) : item.date.split(' ')[0];
-                            const typeStr = msg.command === "loadLocal" ? item.eventType : (item.hash ? item.hash.substring(0, 7) : 'Git');
-                            const labelStr = msg.command === 'loadLocal' ? (item.label || item.filePath.split(new RegExp('[\\\\\\\\/]', 'g')).pop()) : item.message;
-                            tr.innerHTML = '<td class="jb-td col-time">' + escapeHtml(timeStr) + '</td><td class="jb-td col-type">' + escapeHtml(typeStr) + '</td><td class="jb-td">' + escapeHtml(labelStr) + '</td>';
-                            el.appendChild(tr);
-                            items.push({ item, element: tr });
-                        });
+                        
+                        items = rawItems.map(item => ({ item, element: null }));
+                        renderList();
                     }
                 });
+
+                window.sortBy = (column) => {
+                    if (currentSort.column === column) {
+                        currentSort.direction = currentSort.direction === 'asc' ? 'desc' : 'asc';
+                    } else {
+                        currentSort.column = column;
+                        currentSort.direction = (column === 'date' || column === 'timestamp') ? 'desc' : 'asc';
+                    }
+                    renderList();
+                };
+
+                function renderList() {
+                    const el = document.getElementById('list'); el.innerHTML = '';
+                    const headerRow = document.getElementById('headerRow');
+                    
+                    if (currentMode === 'local') {
+                        headerRow.innerHTML = '<th class="jb-th" data-column="timestamp" data-label="Time" onclick="sortBy(\'timestamp\')" style="width: 100px;">Time</th>' +
+                                              '<th class="jb-th" data-column="eventType" data-label="Type" onclick="sortBy(\'eventType\')" style="width: 80px;">Type</th>' +
+                                              '<th class="jb-th" data-column="label" data-label="Description" onclick="sortBy(\'label\')">Description</th>';
+                    } else {
+                        headerRow.innerHTML = '<th class="jb-th" data-column="hash" data-label="Version" onclick="sortBy(\'hash\')" style="width: 80px;">Version</th>' +
+                                              '<th class="jb-th" data-column="date" data-label="Date" onclick="sortBy(\'date\')" style="width: 150px;">Date</th>' +
+                                              '<th class="jb-th" data-column="author" data-label="Author" onclick="sortBy(\'author\')" style="width: 120px;">Author</th>' +
+                                              '<th class="jb-th" data-column="message" data-label="Message" onclick="sortBy(\'message\')">Message</th>';
+                    }
+
+                    items.sort((a, b) => {
+                        let valA, valB;
+                        if (currentMode === 'local') {
+                            if (currentSort.column === 'timestamp' || currentSort.column === 'date') { valA = a.item.timestamp; valB = b.item.timestamp; }
+                            else if (currentSort.column === 'eventType') { valA = a.item.eventType; valB = b.item.eventType; }
+                            else { valA = a.item.label || a.item.filePath; valB = b.item.label || b.item.filePath; }
+                        } else {
+                            if (currentSort.column === 'date' || currentSort.column === 'timestamp') { valA = new Date(a.item.date).getTime(); valB = new Date(b.item.date).getTime(); }
+                            else if (currentSort.column === 'hash') { valA = a.item.hash; valB = b.item.hash; }
+                            else if (currentSort.column === 'author') { valA = a.item.author; valB = b.item.author; }
+                            else { valA = a.item.message; valB = b.item.message; }
+                        }
+                        if (valA < valB) return currentSort.direction === 'asc' ? -1 : 1;
+                        if (valA > valB) return currentSort.direction === 'asc' ? 1 : -1;
+                        return 0;
+                    });
+
+                    items.forEach((itemObj, index) => {
+                        const tr = document.createElement('tr'); tr.className = 'jb-tr';
+                        if (selectedIndex === index) tr.classList.add('selected');
+                        tr.onclick = () => {
+                            selectedIndex = index;
+                            document.querySelectorAll('.jb-tr').forEach(r => r.classList.remove('selected'));
+                            tr.classList.add('selected');
+                            if (currentMode === "local") {
+                                vscode.postMessage({ command: "openDiff", snapshot: itemObj.item, baseFilePath: lastMsg.filePath });
+                                updateDetails(itemObj.item, 'local', lastMsg.filePath);
+                            } else {
+                                vscode.postMessage({ command: "openDiff", commit: itemObj.item, baseFilePath: lastMsg.filePath, compareWithCurrent: false });
+                                updateDetails(itemObj.item, 'git', lastMsg.filePath);
+                            }
+                        };
+                        
+                        if (currentMode === 'local') {
+                            const timeStr = new Date(itemObj.item.timestamp).toLocaleTimeString(undefined, {hour:'2-digit',minute:'2-digit',second:'2-digit'});
+                            const typeStr = itemObj.item.eventType;
+                            const labelStr = itemObj.item.label || itemObj.item.filePath.split(new RegExp('[\\\\\\\\/]', 'g')).pop();
+                            tr.innerHTML = '<td class="jb-td">' + escapeHtml(timeStr) + '</td><td class="jb-td">' + escapeHtml(typeStr) + '</td><td class="jb-td">' + escapeHtml(labelStr) + '</td>';
+                        } else {
+                            const hashStr = itemObj.item.hash.substring(0, 7);
+                            const dateStr = itemObj.item.date;
+                            const authorStr = itemObj.item.author;
+                            const msgStr = itemObj.item.message;
+                            tr.innerHTML = '<td class="jb-td" style="font-family: monospace;">' + escapeHtml(hashStr) + '</td>' +
+                                           '<td class="jb-td">' + escapeHtml(dateStr) + '</td>' +
+                                           '<td class="jb-td">' + escapeHtml(authorStr) + '</td>' +
+                                           '<td class="jb-td">' + escapeHtml(msgStr) + '</td>';
+                        }
+                        el.appendChild(tr);
+                        itemObj.element = tr;
+                    });
+                    updateSortHeaders();
+                }
+
+                function updateSortHeaders() {
+                    document.querySelectorAll('.jb-th').forEach(th => {
+                        th.classList.remove('active-sort');
+                        const label = th.dataset.label;
+                        const isCurrent = th.dataset.column === currentSort.column || 
+                                         (currentSort.column === 'timestamp' && th.dataset.column === 'date') ||
+                                         (currentSort.column === 'date' && th.dataset.column === 'timestamp');
+                        if (isCurrent) {
+                            th.classList.add('active-sort');
+                            th.innerHTML = label + (currentSort.direction === 'asc' ? ' ↑' : ' ↓');
+                        } else {
+                            th.innerHTML = label;
+                        }
+                    });
+                }
 
                 window.addEventListener('keydown', e => {
                     if (e.key === 'ArrowDown') { navigate(1); e.preventDefault(); }
