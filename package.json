@@ -2,7 +2,7 @@
   "name": "chronos-history",
   "displayName": "Chronos History",
   "description": "Comprehensive Chronos and Git History tracking for VS Code.",
-  "version": "4.1.7",
+  "version": "4.1.8",
   "publisher": "IldioMartins",
   "license": "MIT",
   "icon": "resources/icon.png",
@@ -11,7 +11,7 @@
     "url": "https://github.com/ilidio/Chronos"
   },
   "engines": {
-    "vscode": "^1.80.0"
+    "vscode": "^1.95.0"
   },
   "categories": [
     "SCM Providers",
@@ -445,21 +445,21 @@
     "watch": "tsc -watch -p ./"
   },
   "devDependencies": {
-    "@types/adm-zip": "^0.5.7",
-    "@types/node": "^18.0.0",
-    "@types/uuid": "^9.0.0",
-    "@types/vscode": "^1.80.0",
-    "@vscode/vsce": "^2.19.0",
-    "typescript": "^5.1.0"
+    "@types/adm-zip": "^0.5.8",
+    "@types/node": "^24.0.0",
+    "@types/uuid": "^9.0.8",
+    "@types/vscode": "^1.95.0",
+    "@vscode/vsce": "^2.32.0",
+    "typescript": "^5.9.3"
   },
   "dependencies": {
-    "@google/genai": "^1.37.0",
+    "@google/genai": "^1.46.0",
     "adm-zip": "^0.5.16",
     "date-fns": "^2.30.0",
-    "glob": "^10.0.0",
-    "minimatch": "^9.0.0",
-    "simple-git": "^3.19.0",
-    "uuid": "^9.0.0",
+    "glob": "^10.5.0",
+    "minimatch": "^9.0.9",
+    "simple-git": "^3.33.0",
+    "uuid": "^9.0.1",
     "vis-network": "^10.0.2"
   }
 }
