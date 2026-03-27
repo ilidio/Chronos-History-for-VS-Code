@@ -238,7 +238,9 @@ export class HistoryViewProvider {
                     }
                     return;
                 case 'openNativeDiff':
-                    if (message.params.type === 'commit') {
+                    if (message.params.type === 'commitWithBranch') {
+                        vscode.commands.executeCommand('chronos.compareCommitWithBranch', message.params.commit, message.params.branch, message.params.filePath);
+                    } else if (message.params.type === 'commit') {
                         if (message.params.compareWithCurrent) vscode.commands.executeCommand('_chronos.openDiffGitCurrent', message.params.commit, message.params.filePath, message.params.selection);
                         else vscode.commands.executeCommand('_chronos.openDiffGit', message.params.commit, message.params.filePath);
                     }
@@ -274,13 +276,6 @@ export class HistoryViewProvider {
                     }
                     return;
                 case 'compareWithBranchVersion': vscode.commands.executeCommand('chronos.compareWithBranchVersion', { commit: message.commit, filePath: filePath }); return;
-                case 'openNativeDiff':
-                    if (message.params.type === 'commitWithBranch') vscode.commands.executeCommand('chronos.compareCommitWithBranch', message.params.commit, message.params.branch, message.params.filePath);
-                    else if (message.params.type === 'commit') {
-                        if (message.params.compareWithCurrent) vscode.commands.executeCommand('_chronos.openDiffGitCurrent', message.params.commit, message.params.filePath, message.params.selection);
-                        else vscode.commands.executeCommand('_chronos.openDiffGit', message.params.commit, message.params.filePath);
-                    }
-                    return;
                 case 'updateLayout': vscode.workspace.getConfiguration('chronos').update('diff.htmlPreviewLayout', message.layout, vscode.ConfigurationTarget.Global); return;
                 case 'updateSync': vscode.workspace.getConfiguration('chronos').update('diff.syncScroll', message.sync, vscode.ConfigurationTarget.Global); return;
                 case 'savePatch': vscode.commands.executeCommand('_chronos.savePatch', message.diffText); return;

@@ -2,7 +2,7 @@ import * as vscode from 'vscode';
 import * as path from 'path';
 import * as fs from 'fs';
 import * as os from 'os';
-import * as AdmZip from 'adm-zip';
+import AdmZip from 'adm-zip';
 import { HistoryStorage } from './storage';
 import { HistoryIndex, Snapshot } from './types';
 

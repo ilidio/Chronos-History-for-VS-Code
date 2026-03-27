@@ -1,6 +1,6 @@
 .vscode/**
 .vscode-test/**
-out/test/**
+out/**
 test/**
 src/**
 **/*.map
@@ -20,7 +20,7 @@ npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 .npm/
-dist/
+node_modules/**
 *.tsbuildinfo
 *.vsix
 .DS_Store
@@ -36,7 +36,7 @@ tmp/
 .ai_logs/
 .prompt_history/
 test_secrets.json
-# Ensure out/ is included
-!out/**
+# Ensure dist/ is included
+!dist/**
 # Ensure resources/ are included
 !resources/**
