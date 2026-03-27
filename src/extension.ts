@@ -401,34 +401,41 @@ async function openDiff(snapshot: Snapshot, baseFilePath: string, currentSelecti
 }
 
 async function openDiffGit(commit: GitCommit, filePath: string) {
-    if (!commit || !commit.diff) return;
+    if (!commit) return;
+    const workspaceFolder = vscode.workspace.getWorkspaceFolder(vscode.Uri.file(filePath));
+    if (!workspaceFolder) return;
+
     const ext = path.extname(filePath) || '.txt';
     const fileName = path.basename(filePath);
-    const config = vscode.workspace.getConfiguration('chronos');
     const diffOptions = { 
         viewColumn: vscode.ViewColumn.Active, 
         preview: true
     };
 
     try {
-        const lines = commit.diff.split('\n');
-        let leftContent = '', rightContent = '';
-        for (const line of lines) {
-            if (line.startsWith('diff ') || line.startsWith('index ') || line.startsWith('---') || line.startsWith('+++') || line.startsWith('@@')) continue;
-            if (line.startsWith('-')) leftContent += line.substring(1) + '\n';
-            else if (line.startsWith('+')) rightContent += line.substring(1) + '\n';
-            else { 
-                const contextLine = line.startsWith(' ') ? line.substring(1) : line;
-                leftContent += contextLine + '\n'; 
-                rightContent += contextLine + '\n'; 
-            }
+        const canonicalPath = await gitService.getCanonicalPath(filePath, commit.hash);
+        
+        // Get content at current commit
+        const { stdout: currentContent } = await gitService.runGit(['show', `${commit.hash}:${canonicalPath}`], workspaceFolder.uri.fsPath);
+        
+        // Get content at parent commit
+        let parentContent = '';
+        try {
+            const { stdout: pc } = await gitService.runGit(['show', `${commit.hash}^:${canonicalPath}`], workspaceFolder.uri.fsPath);
+            parentContent = pc;
+        } catch (e) {
+            // Might be initial commit
+            parentContent = '';
         }
-        const leftTemp = await createTempFile(`git_${commit.hash.substring(0,7)}_before${ext}`, leftContent);
-        const rightTemp = await createTempFile(`git_${commit.hash.substring(0,7)}_after${ext}`, rightContent);
+
+        const leftTemp = await createTempFile(`git_${commit.hash.substring(0,7)}_parent${ext}`, parentContent);
+        const rightTemp = await createTempFile(`git_${commit.hash.substring(0,7)}${ext}`, currentContent);
         
         const title = `${fileName} (Parent) ↔ ${fileName} (${commit.hash.substring(0, 7)})`;
         await vscode.commands.executeCommand('vscode.diff', leftTemp, rightTemp, title, diffOptions);
-    } catch (e) {}
+    } catch (e) {
+        vscode.window.showErrorMessage('Failed to open Git diff: ' + e);
+    }
 }
 
 async function openDiffGitCurrent(commit: GitCommit, filePath: string, selection?: {startLine: number, endLine: number}) {
@@ -438,7 +445,6 @@ async function openDiffGitCurrent(commit: GitCommit, filePath: string, selection
     const workspaceFolder = vscode.workspace.getWorkspaceFolder(vscode.Uri.file(filePath));
     if (!workspaceFolder) return;
 
-    const config = vscode.workspace.getConfiguration('chronos');
     const diffOptions = { 
         viewColumn: vscode.ViewColumn.Active, 
         preview: true
@@ -447,31 +453,17 @@ async function openDiffGitCurrent(commit: GitCommit, filePath: string, selection
     try {
         // 1. Get historical version content
         const canonicalPath = await gitService.getCanonicalPath(filePath, commit.hash);
-        const showArgs = [`${commit.hash}:${canonicalPath}`];
-        const { stdout: historicalContent } = await gitService.runGit(['show', ...showArgs], workspaceFolder.uri.fsPath);
+        const { stdout: historicalContent } = await gitService.runGit(['show', `${commit.hash}:${canonicalPath}`], workspaceFolder.uri.fsPath);
         
-        // 2. Get current content
-        const currentContent = fs.readFileSync(filePath, 'utf8');
-
-        // 3. Slice to selection if available
-        let histLines = historicalContent;
-        let currLines = currentContent;
-
-        if (selection) {
-            histLines = historicalContent.split('\n').slice(selection.startLine, selection.endLine + 1).join('\n');
-            currLines = currentContent.split('\n').slice(selection.startLine, selection.endLine + 1).join('\n');
-        }
-
-        const leftTemp = await createTempFile(`git_${commit.hash.substring(0,7)}${selection ? '_selection' : ''}${ext}`, histLines);
-        
+        // 2. We always show the full file content for better context
+        const leftTemp = await createTempFile(`git_${commit.hash.substring(0,7)}${ext}`, historicalContent);
         const title = `${fileName} (${commit.hash.substring(0, 7)}) ↔ ${fileName} (Current)`;
         
-        if (selection) {
-            const rightTemp = await createTempFile(`current_selection${ext}`, currLines);
-            await vscode.commands.executeCommand('vscode.diff', leftTemp, rightTemp, title, diffOptions);
-        } else {
-            await vscode.commands.executeCommand('vscode.diff', leftTemp, vscode.Uri.file(filePath), title, diffOptions);
-        }
+        // Use vscode.diff with the full file URI to allow editing of the current file
+        await vscode.commands.executeCommand('vscode.diff', leftTemp, vscode.Uri.file(filePath), title, diffOptions);
+        
+        // Optional: We could attempt to reveal the selection in the active editor after opening, 
+        // but vscode.diff doesn't provide a direct way to do that for both sides reliably.
     } catch (e) {
         vscode.window.showErrorMessage('Failed to open diff with current: ' + e);
     }
@@ -764,7 +756,7 @@ async function showGitHistory() {
                     editor.document.uri.fsPath, 
                     undefined as any,
                     (c: GitCommit) => explainGitCommit(c),
-                    (h1: string, h2: string) => gitService.getCommitDiff(h1, h2, editor.document.uri.fsPath, 0, 0), // Placeholder range if needed
+                    (h1: string, h2: string) => gitService.getCommitDiff(h1, h2, editor.document.uri.fsPath, -1, -1), // -1, -1 signals whole file
                     aiService.isConfigured()
                 );
             }

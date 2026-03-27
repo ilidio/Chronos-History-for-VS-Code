@@ -112,6 +112,7 @@ export class HistoryViewProvider {
         const htmlLayout = config.get('diff.htmlPreviewLayout', 'side-by-side');
         const htmlPosition = config.get('diff.htmlPreviewPosition', 'top');
         const isSyncScroll = config.get('diff.syncScroll', true);
+        const defaultAction = config.get('diff.defaultAction', 'openDiff');
 
         if (this._panel) {
             this._panel.reveal(vscode.ViewColumn.One);
@@ -125,11 +126,15 @@ export class HistoryViewProvider {
         panel.webview.onDidReceiveMessage(async message => {
             switch (message.command) {
                 case 'ready':
-                    panel.webview.postMessage({ command: 'readyConfig', htmlLayout, htmlPosition, isSyncScroll });
-                    panel.webview.postMessage({ command: 'loadHistory', snapshots, selection: selection ? { startLine: selection.start.line, endLine: selection.end.line } : null, filePath: currentFileUri ? currentFileUri.fsPath : '', explainEnabled: !!onExplain, aiConfigured, enableHtmlPreview });
+                    panel.webview.postMessage({ command: 'readyConfig', htmlLayout, htmlPosition, isSyncScroll, defaultAction });
+                    panel.webview.postMessage({ command: 'loadHistory', snapshots, selection: selection ? { startLine: selection.start.line, endLine: selection.end.line } : null, filePath: currentFileUri ? currentFileUri.fsPath : '', explainEnabled: !!onExplain, aiConfigured, enableHtmlPreview, defaultAction });
                     return;
                 case 'openDiff': 
-                    if (enableHtmlPreview && getDiff) {
+                    if (enableHtmlPreview && getDiff && message.action !== 'openNative') {
+                        if (defaultAction === 'openDiff' && !message.forcePreview) {
+                            vscode.commands.executeCommand('_chronos.openDiff', message.snapshot, message.baseFilePath, message.currentSelection);
+                            return;
+                        }
                         const diff = await getDiff(message.snapshot);
                         panel.webview.postMessage({ command: 'showHtmlDiff', diff, title: (message.snapshot.label || 'Snapshot') + ' Diff', params: { type: 'snapshot', snapshot: message.snapshot, baseFilePath: message.baseFilePath, selection: message.currentSelection } });
                     } else {
@@ -202,6 +207,7 @@ export class HistoryViewProvider {
         const htmlLayout = config.get('diff.htmlPreviewLayout', 'side-by-side');
         const htmlPosition = config.get('diff.htmlPreviewPosition', 'top');
         const isSyncScroll = config.get('diff.syncScroll', true);
+        const defaultAction = config.get('diff.defaultAction', 'openDiff');
 
         if (this._panel) {
             this._panel.reveal(vscode.ViewColumn.One);
@@ -211,20 +217,30 @@ export class HistoryViewProvider {
         }
 
         const panel = this._panel;
-        panel.webview.html = this._getGitHtml(useJetBrains, enableHtmlPreview, htmlLayout, htmlPosition, isSyncScroll);
+        panel.webview.html = this._getGitHtml(useJetBrains, enableHtmlPreview, htmlLayout, htmlPosition, isSyncScroll, defaultAction);
         panel.webview.onDidReceiveMessage(async message => {
             switch (message.command) {
                 case 'ready':
-                    panel.webview.postMessage({ command: 'readyConfig', htmlLayout, htmlPosition, isSyncScroll });
-                    panel.webview.postMessage({ command: 'loadCommits', commits, filePath, selection, explainEnabled: !!onExplain, aiConfigured, enableHtmlPreview });
+                    panel.webview.postMessage({ command: 'readyConfig', htmlLayout, htmlPosition, isSyncScroll, defaultAction });
+                    panel.webview.postMessage({ command: 'loadCommits', commits, filePath, selection, explainEnabled: !!onExplain, aiConfigured, enableHtmlPreview, defaultAction });
                     return;
                 case 'openDiff':
-                    if (enableHtmlPreview && onCompare && !message.compareWithCurrent) {
+                    if (enableHtmlPreview && onCompare && !message.compareWithCurrent && message.action !== 'openNative') {
+                        if (defaultAction === 'openDiff' && !message.forcePreview) {
+                            vscode.commands.executeCommand('_chronos.openDiffGit', message.commit, filePath);
+                            return;
+                        }
                         const diff = message.commit.diff || await onCompare(message.commit.hash + '^', message.commit.hash);
                         panel.webview.postMessage({ command: 'showHtmlDiff', diff, title: 'Commit ' + message.commit.hash.substring(0, 7), params: { type: 'commit', commit: message.commit, filePath, selection, compareWithCurrent: false } });
                     } else {
                         if (message.compareWithCurrent) vscode.commands.executeCommand('_chronos.openDiffGitCurrent', message.commit, filePath, selection);
                         else vscode.commands.executeCommand('_chronos.openDiffGit', message.commit, filePath);
+                    }
+                    return;
+                case 'openNativeDiff':
+                    if (message.params.type === 'commit') {
+                        if (message.params.compareWithCurrent) vscode.commands.executeCommand('_chronos.openDiffGitCurrent', message.params.commit, message.params.filePath, message.params.selection);
+                        else vscode.commands.executeCommand('_chronos.openDiffGit', message.params.commit, message.params.filePath);
                     }
                     return;
                 case 'explain': if (onExplain) { const text = await onExplain(message.commit); panel.webview.postMessage({ command: 'explainResult', text }); } return;
@@ -272,7 +288,7 @@ export class HistoryViewProvider {
         });
     }
 
-    private _getHtmlForWebview(useJetBrains: boolean, enableHtmlPreview: boolean, htmlLayout: string, htmlPosition: string, isSyncScroll: boolean) {
+    private _getHtmlForWebview(useJetBrains: boolean, enableHtmlPreview: boolean, htmlLayout: string, htmlPosition: string, isSyncScroll: boolean, defaultAction: string = 'openDiff') {
         const styles = this._getSharedStyles();
         const containerFlex = htmlPosition === 'top' || htmlPosition === 'bottom' ? 'column' : 'row';
         const diffOrder = htmlPosition === 'top' ? '-1' : '1';
@@ -282,12 +298,16 @@ export class HistoryViewProvider {
             window.closeDiff = () => { document.getElementById('diffContainer').style.display = 'none'; };
             let htmlLayout = '${htmlLayout}';
             let isSyncScroll = ${isSyncScroll};
+            let defaultAction = '${defaultAction}';
             let lastDiffText = '', lastDiffTitle = '';
             let lastCompareParams = null;
 
             window.addEventListener('message', event => {
                 if (event.data.command === 'readyConfig') {
-                    htmlLayout = event.data.htmlLayout; isSyncScroll = event.data.isSyncScroll; updateLayoutButtons();
+                    htmlLayout = event.data.htmlLayout; 
+                    isSyncScroll = event.data.isSyncScroll; 
+                    defaultAction = event.data.defaultAction || defaultAction;
+                    updateLayoutButtons();
                 }
             });
 
@@ -309,6 +329,7 @@ export class HistoryViewProvider {
                 });
                 const nativeBtns = document.querySelectorAll('.btn-open-native');
                 nativeBtns.forEach(btn => {
+                    btn.style.display = defaultAction === 'openDiff' ? 'none' : 'flex';
                     btn.onclick = () => { if (lastCompareParams) vscode.postMessage({ command: 'openNativeDiff', params: lastCompareParams }); };
                 });
                 const savePatchBtns = document.querySelectorAll('.btn-save-patch');
@@ -654,14 +675,14 @@ export class HistoryViewProvider {
         return `<!DOCTYPE html><html><head><meta charset="UTF-8"><style>body { margin: 0; display: flex; flex-direction: ${containerFlex}; height: 100vh; font-family: var(--vscode-font-family); color: var(--vscode-foreground); } .jb-table { width: 100%; border-collapse: collapse; } .jb-td { padding: 4px 8px; border-bottom: 1px solid var(--vscode-panel-border); } .jb-tr:hover { background: var(--vscode-list-hoverBackground); cursor: pointer; } .jb-tr.selected { background: var(--vscode-list-activeSelectionBackground); color: var(--vscode-list-activeSelectionForeground); } .jb-details-pane { width: 300px; display: none; flex-direction: column; padding: 12px; background: var(--vscode-sideBar-background); border-left: 1px solid var(--vscode-panel-border); overflow-y: auto; min-height: 0; } ${styles}</style></head><body><div id="diffContainer" class="diff-container" style="order: ${diffOrder}; flex: 1; min-height: 200px;">${diffHeaderHtml}<div id="diffContent" class="diff-content"></div></div><div class="jb-main" style="flex: 1; display: flex; overflow: hidden; min-height: 0;"><div style="flex: 1; overflow: auto; min-height: 0;"><table class="jb-table"><thead><tr><th class="jb-th" data-column="timestamp" data-label="Time" onclick="sortBy('timestamp')" style="width: 80px;">Time</th><th class="jb-th" data-column="eventType" data-label="Type" onclick="sortBy('eventType')" style="width: 80px;">Type</th><th class="jb-th" data-column="label" data-label="Description" onclick="sortBy('label')">Description</th></tr></thead><tbody id="list"></tbody></table></div><div id="detailsPane" class="jb-details-pane"><div class="jb-label">Time</div><div id="detTime" class="jb-value"></div><div class="jb-label">Type</div><div id="detType" class="jb-value"></div><button id="jbBtnRestore" class="jb-btn">Restore</button><button id="jbBtnBranch" class="jb-btn" style="margin-top: 4px;">Branch</button><button id="jbBtnBranchVersion" class="jb-btn" style="margin-top: 4px;">Version</button><button id="jbBtnExplain" class="jb-btn" style="margin-top: 4px;">✨ Explain</button><div id="explanationBox" style="display:none; margin-top:10px;"><div id="explanationText" style="font-size:0.85em; white-space:pre-wrap;"></div></div></div></div><script>${jbScript}</script></body></html>`;
     }
 
-    private _getGitHtml(useJetBrains: boolean, enableHtmlPreview: boolean, htmlLayout: string, htmlPosition: string, isSyncScroll: boolean) {
+    private _getGitHtml(useJetBrains: boolean, enableHtmlPreview: boolean, htmlLayout: string, htmlPosition: string, isSyncScroll: boolean, defaultAction: string = 'openDiff') {
         const styles = this._getSharedStyles();
         const containerFlex = htmlPosition === 'top' || htmlPosition === 'bottom' ? 'column' : 'row';
         const diffOrder = htmlPosition === 'top' ? '-1' : '1';
         const sidebarStyle = htmlPosition === 'top' || htmlPosition === 'bottom' ? 'max-width: 100%;' : 'max-width: 400px; border-right: 1px solid var(--vscode-panel-border);';
 
         const script = `(function() { const vscode = acquireVsCodeApi(); 
-            ${this._getGitSharedScript(htmlLayout, isSyncScroll)}
+            ${this._getGitSharedScript(htmlLayout, isSyncScroll, defaultAction)}
             let aiConfigured = false;
             let commits = [], selectedIndex = -1;
             let currentSort = { column: 'date', direction: 'desc' };
@@ -803,17 +824,21 @@ export class HistoryViewProvider {
             <div id="diffContent" class="diff-content"></div></div><div class="jb-main" style="flex:1; border-left:1px solid var(--vscode-panel-border); border-right:1px solid var(--vscode-panel-border);"><div class="jb-table-wrapper"><table class="jb-table"><thead><tr><th class="jb-th" data-column="hash" data-label="Version" onclick="sortBy('hash')" style="width: 80px;">Version</th><th class="jb-th" data-column="date" data-label="Date" onclick="sortBy('date')" style="width: 150px;">Date</th><th class="jb-th" data-column="author" data-label="Author" onclick="sortBy('author')" style="width: 120px;">Author</th><th class="jb-th" data-column="message" data-label="Commit Message" onclick="sortBy('message')">Commit Message</th></tr></thead><tbody id="list"></tbody></table></div></div><script>${script}</script></body></html>`;
     }
 
-    private _getGitSharedScript(htmlLayout: string, isSyncScroll: boolean) {
+    private _getGitSharedScript(htmlLayout: string, isSyncScroll: boolean, defaultAction: string = 'openDiff') {
         return `
             window.closeDiff = () => { document.getElementById('diffContainer').style.display = 'none'; };
             let htmlLayout = '${htmlLayout}';
             let isSyncScroll = ${isSyncScroll};
+            let defaultAction = '${defaultAction}';
             let lastDiffText = '', lastDiffTitle = '';
             let lastCompareParams = null;
 
             window.addEventListener('message', event => {
                 if (event.data.command === 'readyConfig') {
-                    htmlLayout = event.data.htmlLayout; isSyncScroll = event.data.isSyncScroll; updateLayoutButtons();
+                    htmlLayout = event.data.htmlLayout; 
+                    isSyncScroll = event.data.isSyncScroll; 
+                    defaultAction = event.data.defaultAction || defaultAction;
+                    updateLayoutButtons();
                 }
             });
 
@@ -834,6 +859,7 @@ export class HistoryViewProvider {
                 });
                 const nativeBtns = document.querySelectorAll('.btn-open-native');
                 nativeBtns.forEach(btn => {
+                    btn.style.display = defaultAction === 'openDiff' ? 'none' : 'flex';
                     btn.onclick = () => { if (lastCompareParams) vscode.postMessage({ command: 'openNativeDiff', params: lastCompareParams }); };
                 });
                 const savePatchBtns = document.querySelectorAll('.btn-save-patch');

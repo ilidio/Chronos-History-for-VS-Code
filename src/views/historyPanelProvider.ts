@@ -26,14 +26,28 @@ export class HistoryPanelProvider implements vscode.WebviewViewProvider {
             const htmlLayout = config.get('diff.htmlPreviewLayout', 'side-by-side');
             const htmlPosition = config.get('diff.htmlPreviewPosition', 'top');
             const isSyncScroll = config.get('diff.syncScroll', true);
+            const defaultAction = config.get('diff.defaultAction', 'openDiff');
 
             if (message.command === 'ready') {
-                this._view?.webview.postMessage({ command: 'readyConfig', htmlLayout, htmlPosition, isSyncScroll });
+                this._view?.webview.postMessage({ command: 'readyConfig', htmlLayout, htmlPosition, isSyncScroll, defaultAction });
                 if (this._pendingData) {
-                    this._view?.webview.postMessage({ ...this._pendingData, enableHtmlPreview });
+                    this._view?.webview.postMessage({ ...this._pendingData, enableHtmlPreview, defaultAction });
                 }
             } else if (message.command === 'openDiff') {
-                if (enableHtmlPreview) {
+                if (enableHtmlPreview && message.action !== 'openNative') {
+                    if (defaultAction === 'openDiff' && !message.forcePreview) {
+                        if (this._currentMode === 'local') {
+                            vscode.commands.executeCommand('_chronos.openDiff', message.snapshot, message.baseFilePath, message.currentSelection);
+                        } else {
+                            if (message.compareWithCurrent) {
+                                vscode.commands.executeCommand('_chronos.openDiffGitCurrent', message.commit, message.baseFilePath, message.currentSelection);
+                            } else {
+                                vscode.commands.executeCommand('_chronos.openDiffGit', message.commit, message.baseFilePath);
+                            }
+                        }
+                        return;
+                    }
+                    
                     let diff = '';
                     if (this._currentMode === 'local') {
                         diff = await vscode.commands.executeCommand<string>('_chronos.getDiffForSnapshot', message.snapshot, message.baseFilePath) || '';
@@ -102,7 +116,10 @@ export class HistoryPanelProvider implements vscode.WebviewViewProvider {
 
     public showLocalHistory(snapshots: any[], filePath: string, selection?: any, aiConfigured: boolean = false) {
         this._currentMode = 'local';
-        this._pendingData = { command: 'loadLocal', snapshots, filePath, selection, aiConfigured };
+        const config = vscode.workspace.getConfiguration('chronos');
+        const enableHtmlPreview = config.get('diff.enableHtmlPreview', true);
+        const defaultAction = config.get('diff.defaultAction', 'openDiff');
+        this._pendingData = { command: 'loadLocal', snapshots, filePath, selection, aiConfigured, enableHtmlPreview, defaultAction };
         if (this._view) {
             this._view.show?.(true); 
             this._view.webview.postMessage(this._pendingData);
@@ -111,7 +128,10 @@ export class HistoryPanelProvider implements vscode.WebviewViewProvider {
 
     public showGitHistory(commits: GitCommit[], filePath: string, selection?: any, aiConfigured: boolean = false) {
         this._currentMode = 'git';
-        this._pendingData = { command: 'loadGit', commits, filePath, selection, aiConfigured };
+        const config = vscode.workspace.getConfiguration('chronos');
+        const enableHtmlPreview = config.get('diff.enableHtmlPreview', true);
+        const defaultAction = config.get('diff.defaultAction', 'openDiff');
+        this._pendingData = { command: 'loadGit', commits, filePath, selection, aiConfigured, enableHtmlPreview, defaultAction };
         if (this._view) {
             this._view.show?.(true);
             this._view.webview.postMessage(this._pendingData);
@@ -125,6 +145,7 @@ export class HistoryPanelProvider implements vscode.WebviewViewProvider {
         const htmlLayout = config.get('diff.htmlPreviewLayout', 'side-by-side');
         const htmlPosition = config.get('diff.htmlPreviewPosition', 'top');
         const isSyncScroll = config.get('diff.syncScroll', true);
+        const defaultAction = config.get('diff.defaultAction', 'openDiff');
         
         const sharedStyle = `
             .diff-container { display: none; flex: 1; flex-direction: column; overflow: hidden; background: var(--vscode-editor-background); }
@@ -142,42 +163,12 @@ export class HistoryPanelProvider implements vscode.WebviewViewProvider {
             .diff-line.removed { background-color: var(--vscode-diffEditor-removedTextBackground); }
             .diff-line.empty { background-color: var(--vscode-editor-background); opacity: 0.3; }
             .diff-line.header { background-color: var(--vscode-editor-lineHighlightBackground); font-weight: bold; opacity: 0.8; font-size: 0.85em; }
-            
-            .btn-action { 
-                background: var(--vscode-button-background); 
-                color: var(--vscode-button-foreground); 
-                border: none; 
-                padding: 0 8px; 
-                height: 28px;
-                cursor: pointer; 
-                border-radius: 2px;
-                display: flex;
-                align-items: center;
-                justify-content: center;
-                font-size: 0.85em;
-            }
+            .btn-action { background: var(--vscode-button-background); color: var(--vscode-button-foreground); border: none; padding: 0 8px; height: 28px; cursor: pointer; border-radius: 2px; display: flex; align-items: center; justify-content: center; font-size: 0.85em; }
             .btn-action.active { background: var(--vscode-textLink-foreground); }
-            
             .diff-info-bar { background: var(--vscode-editor-lineHighlightBackground); padding: 4px 8px; border-bottom: 1px solid var(--vscode-panel-border); display: flex; align-items: center; gap: 8px; font-size: 0.75em; }
             .diff-info-path { font-family: var(--vscode-editor-font-family); opacity: 0.9; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
             .diff-info-tag { background: var(--vscode-badge-background); color: var(--vscode-badge-foreground); padding: 1px 4px; border-radius: 2px; font-size: 0.85em; font-weight: bold; }
-
-            .jb-th { 
-                padding: 4px 8px; 
-                text-align: left; 
-                font-size: 0.75em; 
-                font-weight: bold; 
-                background: var(--vscode-sideBar-background); 
-                border-bottom: 1px solid var(--vscode-panel-border); 
-                position: sticky; 
-                top: 0; 
-                z-index: 10;
-                cursor: pointer;
-                user-select: none;
-                white-space: nowrap;
-                overflow: hidden;
-                text-overflow: ellipsis;
-            }
+            .jb-th { padding: 4px 8px; text-align: left; font-size: 0.75em; font-weight: bold; background: var(--vscode-sideBar-background); border-bottom: 1px solid var(--vscode-panel-border); position: sticky; top: 0; z-index: 10; cursor: pointer; user-select: none; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
             .jb-th:hover { background: var(--vscode-list-hoverBackground); }
             .jb-th.active-sort { color: var(--vscode-textLink-foreground); }
         `;
@@ -186,8 +177,18 @@ export class HistoryPanelProvider implements vscode.WebviewViewProvider {
             window.closeDiff = () => { document.getElementById('diffContainer').style.display = 'none'; };
             let htmlLayout = '${htmlLayout}';
             let isSyncScroll = ${isSyncScroll};
+            let defaultAction = '${defaultAction}';
             let lastDiffText = '', lastDiffTitle = '';
             let lastCompareParams = null;
+
+            window.addEventListener('message', event => {
+                if (event.data.command === 'readyConfig') {
+                    htmlLayout = event.data.htmlLayout; 
+                    isSyncScroll = event.data.isSyncScroll; 
+                    defaultAction = event.data.defaultAction || defaultAction;
+                    updateLayoutButtons();
+                }
+            });
 
             function updateLayoutButtons() {
                 document.querySelectorAll('.btn-sbs').forEach(btn => {
@@ -206,6 +207,7 @@ export class HistoryPanelProvider implements vscode.WebviewViewProvider {
                 });
                 const nativeBtns = document.querySelectorAll('.btn-open-native');
                 nativeBtns.forEach(btn => {
+                    btn.style.display = defaultAction === 'openDiff' ? 'none' : 'flex';
                     btn.onclick = () => { if (lastCompareParams) vscode.postMessage({ command: 'openNativeDiff', params: lastCompareParams }); };
                 });
                 const savePatchBtns = document.querySelectorAll('.btn-save-patch');
@@ -285,7 +287,7 @@ export class HistoryPanelProvider implements vscode.WebviewViewProvider {
                     }
                 }
             }
-            function escapeHtml(unsafe) { if (!unsafe) return ""; return unsafe.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#039;"); }
+            function escapeHtml(unsafe) { if (!unsafe) return ""; return String(unsafe).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#039;"); }
         `;
 
         const containerFlex = htmlPosition === 'top' || htmlPosition === 'bottom' ? 'column' : 'row';
@@ -311,21 +313,20 @@ export class HistoryPanelProvider implements vscode.WebviewViewProvider {
         `;
 
         if (!useJetBrains) {
-            const style = `body { margin: 0; padding: 0; color: var(--vscode-editor-foreground); background-color: var(--vscode-editor-background); font-family: var(--vscode-font-family); height: 100vh; overflow: hidden; display: flex; flex-direction: ${containerFlex}; } .list { flex: 1; overflow-y: auto; min-height: 0; } .entry { padding: 8px 12px; border-bottom: 1px solid var(--vscode-panel-border); cursor: pointer; display: flex; align-items: center; gap: 10px; } .entry:hover { background-color: var(--vscode-list-hoverBackground); } .header { display: flex; align-items: center; gap: 10px; flex: 1; min-width: 0; } .event-type { font-weight: bold; text-transform: uppercase; font-size: 0.8em; opacity: 0.8; min-width: 60px; } .time { font-family: monospace; opacity: 0.9; min-width: 110px; } .message { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-weight: 500; } .empty-state { padding: 20px; text-align: center; opacity: 0.5; } ${sharedStyle}`;
-
-            const script = `(function() { const vscode = acquireVsCodeApi(); ${sharedScript}
-                let aiConfigured = false;
+            const script = `(function() { 
+                const vscode = acquireVsCodeApi(); 
+                ${sharedScript}
                 let items = [], selectedIndex = -1, lastMsg = null;
                 window.addEventListener("message", event => {
                     const msg = event.data;
                     if (msg.command === "showHtmlDiff") { renderDiff(msg.diff, msg.title, msg.params); return; }
-                    const el = document.getElementById("list"); if (!el) return; el.innerHTML = "";
-                    let rawItems = []; lastMsg = msg;
-                    if (msg.command === "loadLocal") { aiConfigured = !!msg.aiConfigured; (msg.snapshots || []).forEach(s => { if (s.type === "cluster") rawItems.push(...s.items); else rawItems.push(s); }); }
-                    else if (msg.command === "loadGit") { aiConfigured = !!msg.aiConfigured; rawItems = msg.commits || []; }
-                    if (rawItems.length === 0) { el.innerHTML = '<div class="empty-state">No history found.</div>'; return; }
-                    items = [];
-                        rawItems.forEach((item, index) => {
+                    if (msg.command === "loadLocal" || msg.command === "loadGit") {
+                        const el = document.getElementById("list"); if (!el) return; el.innerHTML = "";
+                        let raw = []; lastMsg = msg;
+                        if (msg.command === "loadLocal") { (msg.snapshots || []).forEach(s => { if (s.type === "cluster") raw.push(...s.items); else raw.push(s); }); }
+                        else if (msg.command === "loadGit") { raw = msg.commits || []; }
+                        if (raw.length === 0) { el.innerHTML = '<div class="empty-state">No history found.</div>'; return; }
+                        items = raw.map((item, index) => {
                             const entry = document.createElement("div"); entry.className = "entry";
                             entry.onclick = () => {
                                 selectedIndex = index;
@@ -334,255 +335,129 @@ export class HistoryPanelProvider implements vscode.WebviewViewProvider {
                                 if (msg.command === "loadLocal") vscode.postMessage({ command: "openDiff", snapshot: item, baseFilePath: msg.filePath, currentSelection: msg.selection });
                                 else vscode.postMessage({ command: "openDiff", commit: item, baseFilePath: msg.filePath, currentSelection: msg.selection, compareWithCurrent: false });
                             };
-                            const typeStr = msg.command === "loadLocal" ? item.eventType : (item.hash ? item.hash.substring(0, 7) : 'Git');
-                            const timeStr = msg.command === "loadLocal" ? new Date(item.timestamp).toLocaleTimeString(undefined, {hour:'2-digit',minute:'2-digit',second:'2-digit'}) : item.date;
-                            const authorStr = msg.command === "loadGit" ? (' | ' + item.author) : '';
-                            const msgStr = msg.command === "loadLocal" ? (item.label || item.filePath.split(new RegExp('[\\\\\\\\/]', 'g')).pop()) : item.message;
-                            entry.innerHTML = '<div class="header"><span class="event-type">' + escapeHtml(typeStr) + '</span><span class="time">' + escapeHtml(timeStr) + escapeHtml(authorStr) + '</span><span class="message">' + escapeHtml(msgStr) + '</span></div>';
+                            const type = msg.command === "loadLocal" ? item.eventType : (item.hash ? item.hash.substring(0, 7) : 'Git');
+                            const time = msg.command === "loadLocal" ? new Date(item.timestamp).toLocaleTimeString() : item.date;
+                            const msgStr = msg.command === "loadLocal" ? (item.label || item.filePath.split(/[\\\\/]/).pop()) : item.message;
+                            entry.innerHTML = '<div class="header"><span class="event-type">' + escapeHtml(type) + '</span><span class="time">' + escapeHtml(time) + '</span><span class="message">' + escapeHtml(msgStr) + '</span></div>';
                             el.appendChild(entry);
-                            items.push({ item, element: entry });
+                            return { item, element: entry };
                         });
-                });
-
-                window.addEventListener('keydown', e => {
-                    if (e.key === 'ArrowDown') { navigate(1); e.preventDefault(); }
-                    else if (e.key === 'ArrowUp') { navigate(-1); e.preventDefault(); }
-                });
-
-                function navigate(direction) {
-                    if (items.length === 0) return;
-                    let next = selectedIndex + direction;
-                    if (next < 0) next = 0;
-                    if (next >= items.length) next = items.length - 1;
-                    if (next !== selectedIndex) {
-                        items[next].element.click();
-                        items[next].element.scrollIntoView({ block: 'nearest' });
                     }
-                }
-
+                });
                 vscode.postMessage({ command: "ready" });
                 updateLayoutButtons();
             })();`;
 
-            return `<!DOCTYPE html><html><head><meta charset='UTF-8'><style>${style}</style></head><body><div id='diffContainer' class='diff-container' style='order: ${diffOrder}; ${diffBorder} flex: 1; min-height: 200px;'>${diffHeaderHtml}<div id='diffContent' class='diff-content'></div></div><div id='list' class='list' style='order: 0;'><div class='empty-state'>Waiting...</div></div><script>${script}</script></body></html>`;
+            return `<!DOCTYPE html><html><head><meta charset='UTF-8'><style>body { margin: 0; padding: 0; color: var(--vscode-editor-foreground); background-color: var(--vscode-editor-background); font-family: var(--vscode-font-family); height: 100vh; overflow: hidden; display: flex; flex-direction: ${containerFlex}; } .list { flex: 1; overflow-y: auto; min-height: 0; } .entry { padding: 8px 12px; border-bottom: 1px solid var(--vscode-panel-border); cursor: pointer; display: flex; align-items: center; gap: 10px; } .entry:hover { background-color: var(--vscode-list-hoverBackground); } .header { display: flex; align-items: center; gap: 10px; flex: 1; min-width: 0; } .event-type { font-weight: bold; text-transform: uppercase; font-size: 0.8em; opacity: 0.8; min-width: 60px; } .time { font-family: monospace; opacity: 0.9; min-width: 110px; } .message { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-weight: 500; } .empty-state { padding: 20px; text-align: center; opacity: 0.5; } ${sharedStyle}</style></head><body><div id='diffContainer' class='diff-container' style='order: ${diffOrder}; ${diffBorder} flex: 1; min-height: 200px;'>${diffHeaderHtml}<div id='diffContent' class='diff-content'></div></div><div id='list' class='list' style='order: 0;'><div class='empty-state'>Waiting...</div></div><script>${script}</script></body></html>`;
         }
 
-        return `<!DOCTYPE html><html><head><meta charset="UTF-8"><style>
-            body { margin: 0; padding: 0; color: var(--vscode-editor-foreground); background-color: var(--vscode-editor-background); font-family: var(--vscode-font-family); height: 100vh; overflow: hidden; display: flex; flex-direction: ${containerFlex}; }
-            .jb-main { display: flex; flex: 1; overflow: hidden; order: 0; min-height: 0; }
-            .jb-table-wrapper { flex: 1; overflow: auto; border-right: 1px solid var(--vscode-panel-border); min-height: 0; }
-            .jb-details-pane { width: 250px; display: flex; flex-direction: column; background: var(--vscode-sideBar-background); padding: 8px; gap: 8px; overflow-y: auto; border-left: 1px solid var(--vscode-panel-border); min-height: 0; }
-            .jb-table { width: 100%; border-collapse: collapse; table-layout: fixed; }
-            .jb-tr { cursor: pointer; border-bottom: 1px solid rgba(128,128,128,0.05); }
-            .jb-tr:hover { background-color: var(--vscode-list-hoverBackground); }
-            .jb-tr.selected { background-color: var(--vscode-list-activeSelectionBackground); color: var(--vscode-list-activeSelectionForeground); }
-            .jb-td { padding: 4px 8px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: 0.85em; }
-            .col-time { width: 85px; } .col-type { width: 80px; }
-            .jb-btn { background: var(--vscode-button-background); color: var(--vscode-button-foreground); border: none; padding: 0 8px; height: 28px; cursor: pointer; border-radius: 2px; font-size: 0.85em; width: 100%; text-align: center; display: flex; align-items: center; justify-content: center; }
-            .jb-label { font-size: 0.75em; opacity: 0.7; }
-            .jb-value { font-size: 0.85em; font-weight: bold; margin-bottom: 4px; word-break: break-all; }
-            .empty-state { padding: 20px; text-align: center; opacity: 0.5; font-style: italic; }
-            ${sharedStyle}
-        </style></head>
-        <body>
-            <div id="diffContainer" class="diff-container" style="order: ${diffOrder}; ${diffBorder} flex: 1; min-height: 200px;">
-                ${diffHeaderHtml}
-                <div id="detailsHeader" style="display:none;"><div style="display:flex; gap:8px; align-items:center;"><span id="detTime" style="font-size:0.85em; font-weight:bold; opacity:0.8;"></span></div><div class="actions" style="border:none; padding:0; background:transparent;"><button id="jbBtnRestore">Restore</button><button id="jbBtnBranch">Branch</button><button id="jbBtnBranchVersion">Version</button><button id="jbBtnExplain">✨ Explain</button></div></div>
-                <div id="explanationBox" style="margin: 8px 12px; font-size: 0.85em; white-space: pre-wrap; display: none; background: var(--vscode-editor-lineHighlightBackground); padding: 8px; border-radius: 4px;"></div>
-                <div id="diffContent" class="diff-content"></div>
-            </div>
-            <div class="jb-main">
-                <div class="jb-table-wrapper"><table class="jb-table"><thead><tr id="headerRow"></tr></thead><tbody id="list"></tbody></table></div>
-            </div>
-        <script>
-            (function() {
-                const vscode = acquireVsCodeApi(); ${sharedScript}
-                let aiConfigured = false;
-                let items = [], selectedIndex = -1;
-                let currentMode = 'local';
-                let currentSort = { column: 'date', direction: 'desc' };
-                let lastMsg = null;
+        const jbScript = `(function() {
+            const vscode = acquireVsCodeApi(); 
+            ${sharedScript}
+            let items = [], selectedIndex = -1, lastMsg = null, currentMode = 'local';
+            let currentSort = { column: 'date', direction: 'desc' };
 
-                window.addEventListener("message", event => {
-                    const msg = event.data;
-                    if (msg.command === "showHtmlDiff") { renderDiff(msg.diff, msg.title, msg.params); return; }
-                    if (msg.command === "explainResult") { const box = document.getElementById('explanationBox'); box.style.display = 'block'; box.textContent = msg.text; document.getElementById('jbBtnExplain').textContent = '✨ Explain'; return; }
-                    if (msg.command === "loadLocal" || msg.command === "loadGit") {
-                        lastMsg = msg;
-                        aiConfigured = !!msg.aiConfigured;
-                        currentMode = msg.command === "loadLocal" ? 'local' : 'git';
-                        if (currentMode === 'local') { currentSort.column = 'timestamp'; }
-                        else { currentSort.column = 'date'; }
-                        currentSort.direction = 'desc';
-
-                        const el = document.getElementById('list'); el.innerHTML = '';
-                        let rawItems = [];
-                        if (currentMode === "local") { (msg.snapshots || []).forEach(s => { if (s.type === "cluster") rawItems.push(...s.items); else rawItems.push(s); }); }
-                        else { rawItems = msg.commits || []; }
-                        
-                        items = rawItems.map(item => ({ item, element: null }));
-                        renderList();
-                    }
-                });
-
-                window.sortBy = (column) => {
-                    if (currentSort.column === column) {
-                        currentSort.direction = currentSort.direction === 'asc' ? 'desc' : 'asc';
-                    } else {
-                        currentSort.column = column;
-                        currentSort.direction = (column === 'date' || column === 'timestamp') ? 'desc' : 'asc';
-                    }
+            window.addEventListener("message", event => {
+                const msg = event.data;
+                if (msg.command === "showHtmlDiff") { renderDiff(msg.diff, msg.title, msg.params); return; }
+                if (msg.command === "explainResult") { 
+                    const box = document.getElementById('explanationBox'); if (box) { box.style.display = 'block'; box.textContent = msg.text; }
+                    document.getElementById('jbBtnExplain').textContent = '✨ Explain'; return;
+                }
+                if (msg.command === "loadLocal" || msg.command === "loadGit") {
+                    lastMsg = msg;
+                    currentMode = (msg.command === "loadLocal") ? 'local' : 'git';
+                    currentSort.column = (currentMode === 'local') ? 'timestamp' : 'date';
+                    currentSort.direction = 'desc';
+                    let raw = [];
+                    if (currentMode === "local") { (msg.snapshots || []).forEach(s => { if (s.type === "cluster") raw.push(...s.items); else raw.push(s); }); }
+                    else { raw = msg.commits || []; }
+                    items = raw.map(i => ({ item: i, element: null }));
                     renderList();
-                };
+                }
+            });
 
-                function renderList() {
-                    const el = document.getElementById('list'); el.innerHTML = '';
-                    const headerRow = document.getElementById('headerRow');
-                    
+            window.sortBy = (column) => {
+                if (currentSort.column === column) { currentSort.direction = (currentSort.direction === 'asc') ? 'desc' : 'asc'; }
+                else { currentSort.column = column; currentSort.direction = (column === 'date' || column === 'timestamp') ? 'desc' : 'asc'; }
+                renderList();
+            };
+
+            function renderList() {
+                const el = document.getElementById('list'); const hr = document.getElementById('headerRow');
+                if (!el || !hr) return; el.innerHTML = '';
+                if (currentMode === 'local') {
+                    hr.innerHTML = '<th class="jb-th" data-column="timestamp" data-label="Time" onclick="sortBy(\\'timestamp\\')" style="width: 100px;">Time</th><th class="jb-th" data-column="eventType" data-label="Type" onclick="sortBy(\\'eventType\\')" style="width: 80px;">Type</th><th class="jb-th" data-column="label" data-label="Description" onclick="sortBy(\\'label\\')">Description</th>';
+                } else {
+                    hr.innerHTML = '<th class="jb-th" data-column="hash" data-label="Version" onclick="sortBy(\\'hash\\')" style="width: 80px;">Version</th><th class="jb-th" data-column="date" data-label="Date" onclick="sortBy(\\'date\\')" style="width: 150px;">Date</th><th class="jb-th" data-column="author" data-label="Author" onclick="sortBy(\\'author\\')" style="width: 120px;">Author</th><th class="jb-th" data-column="message" data-label="Message" onclick="sortBy(\\'message\\')">Message</th>';
+                }
+                items.sort((a, b) => {
+                    let vA, vB;
                     if (currentMode === 'local') {
-                        headerRow.innerHTML = '<th class="jb-th" data-column="timestamp" data-label="Time" onclick="sortBy(\'timestamp\')" style="width: 100px;">Time</th>' +
-                                              '<th class="jb-th" data-column="eventType" data-label="Type" onclick="sortBy(\'eventType\')" style="width: 80px;">Type</th>' +
-                                              '<th class="jb-th" data-column="label" data-label="Description" onclick="sortBy(\'label\')">Description</th>';
+                        if (currentSort.column === 'timestamp' || currentSort.column === 'date') { vA = a.item.timestamp; vB = b.item.timestamp; }
+                        else if (currentSort.column === 'eventType') { vA = a.item.eventType; vB = b.item.eventType; }
+                        else { vA = a.item.label || a.item.filePath; vB = b.item.label || b.item.filePath; }
                     } else {
-                        headerRow.innerHTML = '<th class="jb-th" data-column="hash" data-label="Version" onclick="sortBy(\'hash\')" style="width: 80px;">Version</th>' +
-                                              '<th class="jb-th" data-column="date" data-label="Date" onclick="sortBy(\'date\')" style="width: 150px;">Date</th>' +
-                                              '<th class="jb-th" data-column="author" data-label="Author" onclick="sortBy(\'author\')" style="width: 120px;">Author</th>' +
-                                              '<th class="jb-th" data-column="message" data-label="Message" onclick="sortBy(\'message\')">Message</th>';
+                        if (currentSort.column === 'date' || currentSort.column === 'timestamp') { vA = a.item.date ? new Date(a.item.date).getTime() : 0; vB = b.item.date ? new Date(b.item.date).getTime() : 0; }
+                        else if (currentSort.column === 'hash') { vA = a.item.hash || ""; vB = b.item.hash || ""; }
+                        else if (currentSort.column === 'author') { vA = a.item.author || ""; vB = b.item.author || ""; }
+                        else { vA = a.item.message || ""; vB = b.item.message || ""; }
                     }
-
-                    items.sort((a, b) => {
-                        let valA, valB;
-                        if (currentMode === 'local') {
-                            if (currentSort.column === 'timestamp' || currentSort.column === 'date') { valA = a.item.timestamp; valB = b.item.timestamp; }
-                            else if (currentSort.column === 'eventType') { valA = a.item.eventType; valB = b.item.eventType; }
-                            else { valA = a.item.label || a.item.filePath; valB = b.item.label || b.item.filePath; }
-                        } else {
-                            if (currentSort.column === 'date' || currentSort.column === 'timestamp') { valA = new Date(a.item.date).getTime(); valB = new Date(b.item.date).getTime(); }
-                            else if (currentSort.column === 'hash') { valA = a.item.hash; valB = b.item.hash; }
-                            else if (currentSort.column === 'author') { valA = a.item.author; valB = b.item.author; }
-                            else { valA = a.item.message; valB = b.item.message; }
-                        }
-                        if (valA < valB) return currentSort.direction === 'asc' ? -1 : 1;
-                        if (valA > valB) return currentSort.direction === 'asc' ? 1 : -1;
-                        return 0;
-                    });
-
-                    items.forEach((itemObj, index) => {
-                        const tr = document.createElement('tr'); tr.className = 'jb-tr';
-                        if (selectedIndex === index) tr.classList.add('selected');
-                        tr.onclick = () => {
-                            selectedIndex = index;
-                            document.querySelectorAll('.jb-tr').forEach(r => r.classList.remove('selected'));
-                            tr.classList.add('selected');
-                            if (currentMode === "local") {
-                                vscode.postMessage({ command: "openDiff", snapshot: itemObj.item, baseFilePath: lastMsg.filePath });
-                                updateDetails(itemObj.item, 'local', lastMsg.filePath);
-                            } else {
-                                vscode.postMessage({ command: "openDiff", commit: itemObj.item, baseFilePath: lastMsg.filePath, compareWithCurrent: false });
-                                updateDetails(itemObj.item, 'git', lastMsg.filePath);
-                            }
-                        };
-                        
-                        if (currentMode === 'local') {
-                            const timeStr = new Date(itemObj.item.timestamp).toLocaleTimeString(undefined, {hour:'2-digit',minute:'2-digit',second:'2-digit'});
-                            const typeStr = itemObj.item.eventType;
-                            const labelStr = itemObj.item.label || itemObj.item.filePath.split(new RegExp('[\\\\\\\\/]', 'g')).pop();
-                            tr.innerHTML = '<td class="jb-td">' + escapeHtml(timeStr) + '</td><td class="jb-td">' + escapeHtml(typeStr) + '</td><td class="jb-td">' + escapeHtml(labelStr) + '</td>';
-                        } else {
-                            const hashStr = itemObj.item.hash.substring(0, 7);
-                            const dateStr = itemObj.item.date;
-                            const authorStr = itemObj.item.author;
-                            const msgStr = itemObj.item.message;
-                            tr.innerHTML = '<td class="jb-td" style="font-family: monospace;">' + escapeHtml(hashStr) + '</td>' +
-                                           '<td class="jb-td">' + escapeHtml(dateStr) + '</td>' +
-                                           '<td class="jb-td">' + escapeHtml(authorStr) + '</td>' +
-                                           '<td class="jb-td">' + escapeHtml(msgStr) + '</td>';
-                        }
-                        el.appendChild(tr);
-                        itemObj.element = tr;
-                    });
-                    updateSortHeaders();
-                }
-
-                function updateSortHeaders() {
-                    document.querySelectorAll('.jb-th').forEach(th => {
-                        th.classList.remove('active-sort');
-                        const label = th.dataset.label;
-                        const isCurrent = th.dataset.column === currentSort.column || 
-                                         (currentSort.column === 'timestamp' && th.dataset.column === 'date') ||
-                                         (currentSort.column === 'date' && th.dataset.column === 'timestamp');
-                        if (isCurrent) {
-                            th.classList.add('active-sort');
-                            th.innerHTML = label + (currentSort.direction === 'asc' ? ' ↑' : ' ↓');
-                        } else {
-                            th.innerHTML = label;
-                        }
-                    });
-                }
-
-                window.addEventListener('keydown', e => {
-                    if (e.key === 'ArrowDown') { navigate(1); e.preventDefault(); }
-                    else if (e.key === 'ArrowUp') { navigate(-1); e.preventDefault(); }
+                    if (vA < vB) return (currentSort.direction === 'asc') ? -1 : 1;
+                    if (vA > vB) return (currentSort.direction === 'asc') ? 1 : -1;
+                    return 0;
                 });
-
-                function navigate(direction) {
-                    if (items.length === 0) return;
-                    let next = selectedIndex + direction;
-                    if (next < 0) next = 0;
-                    if (next >= items.length) next = items.length - 1;
-                    if (next !== selectedIndex) {
-                        items[next].element.click();
-                        items[next].element.scrollIntoView({ block: 'nearest' });
-                    }
-                }
-
-                function updateDetails(item, mode, filePath) {
-                    const detailsHeader = document.getElementById('detailsHeader');
-                    if (detailsHeader) {
-                        detailsHeader.style.display = 'flex';
-                        detailsHeader.style.alignItems = 'center';
-                        detailsHeader.style.justifyContent = 'space-between';
-                        detailsHeader.style.padding = '8px 12px';
-                        detailsHeader.style.background = 'var(--vscode-editor-lineHighlightBackground)';
-                        detailsHeader.style.borderBottom = '1px solid var(--vscode-panel-border)';
-                    }
-                    document.getElementById('explanationBox').style.display = 'none';
-                    if (mode === 'local') {
-                        document.getElementById('detTime').textContent = new Date(item.timestamp).toLocaleString();
-                        document.getElementById('jbBtnRestore').style.display = 'block';
-                        document.getElementById('jbBtnRestore').onclick = () => vscode.postMessage({ command: 'restore', snapshotId: item.id, filePath: item.filePath });
-                        document.getElementById('jbBtnBranch').onclick = () => vscode.postMessage({ command: 'compareWithBranch', filePath: filePath, snapshot: item });
-                        document.getElementById('jbBtnBranchVersion').onclick = () => vscode.postMessage({ command: 'compareWithBranchVersion', filePath: filePath, snapshot: item });
-                        
-                        if (!aiConfigured) {
-                            document.getElementById('jbBtnExplain').textContent = '✨ Explain (Key Required)';
-                            document.getElementById('jbBtnExplain').style.opacity = '0.5';
-                            document.getElementById('jbBtnExplain').onclick = () => { alert("Please add a Google Gemini API Key in extension settings to use AI features."); };
-                        } else {
-                            document.getElementById('jbBtnExplain').textContent = '✨ Explain';
-                            document.getElementById('jbBtnExplain').style.opacity = '1';
-                            document.getElementById('jbBtnExplain').onclick = () => { document.getElementById('jbBtnExplain').textContent = 'Thinking...'; vscode.postMessage({ command: 'explain', snapshot: item }); };
-                        }
+                items.forEach((obj, idx) => {
+                    const tr = document.createElement('tr'); tr.className = 'jb-tr';
+                    if (selectedIndex === idx) tr.classList.add('selected');
+                    tr.onclick = () => {
+                        selectedIndex = idx; document.querySelectorAll('.jb-tr').forEach(r => r.classList.remove('selected')); tr.classList.add('selected');
+                        if (currentMode === "local") { vscode.postMessage({ command: "openDiff", snapshot: obj.item, baseFilePath: lastMsg.filePath, currentSelection: lastMsg.selection }); updateDetails(obj.item, 'local', lastMsg.filePath); }
+                        else { vscode.postMessage({ command: "openDiff", commit: obj.item, baseFilePath: lastMsg.filePath, currentSelection: lastMsg.selection, compareWithCurrent: false }); updateDetails(obj.item, 'git', lastMsg.filePath); }
+                    };
+                    if (currentMode === 'local') {
+                        const t = new Date(obj.item.timestamp).toLocaleTimeString();
+                        tr.innerHTML = '<td class="jb-td">' + escapeHtml(t) + '</td><td class="jb-td">' + escapeHtml(obj.item.eventType) + '</td><td class="jb-td">' + escapeHtml(obj.item.label || obj.item.filePath.split(/[\\\\/]/).pop()) + '</td>';
                     } else {
-                        document.getElementById('detTime').textContent = item.hash.substring(0, 7) + ' - ' + item.author;
-                        document.getElementById('jbBtnRestore').style.display = 'none';
-                        document.getElementById('jbBtnBranch').onclick = () => vscode.postMessage({ command: 'compareWithBranch', filePath: filePath, commit: item });
-                        document.getElementById('jbBtnBranchVersion').onclick = () => vscode.postMessage({ command: 'compareWithBranchVersion', filePath: filePath, commit: item });
-                        
-                        if (!aiConfigured) {
-                            document.getElementById('jbBtnExplain').textContent = '✨ Explain (Key Required)';
-                            document.getElementById('jbBtnExplain').style.opacity = '0.5';
-                            document.getElementById('jbBtnExplain').onclick = () => { alert("Please add a Google Gemini API Key in extension settings to use AI features."); };
-                        } else {
-                            document.getElementById('jbBtnExplain').textContent = '✨ Explain';
-                            document.getElementById('jbBtnExplain').style.opacity = '1';
-                            document.getElementById('jbBtnExplain').onclick = () => { document.getElementById('jbBtnExplain').textContent = 'Thinking...'; vscode.postMessage({ command: 'explain', commit: item }); };
-                        }
+                        tr.innerHTML = '<td class="jb-td" style="font-family: monospace;">' + escapeHtml(obj.item.hash ? obj.item.hash.substring(0,7) : "---") + '</td><td class="jb-td">' + escapeHtml(obj.item.date) + '</td><td class="jb-td">' + escapeHtml(obj.item.author) + '</td><td class="jb-td">' + escapeHtml(obj.item.message) + '</td>';
                     }
+                    el.appendChild(tr); obj.element = tr;
+                });
+                updateSortHeaders();
+            }
+
+            function updateSortHeaders() {
+                document.querySelectorAll('.jb-th').forEach(th => {
+                    th.classList.remove('active-sort');
+                    if (th.dataset.column === currentSort.column || (currentSort.column === 'timestamp' && th.dataset.column === 'date') || (currentSort.column === 'date' && th.dataset.column === 'timestamp')) {
+                        th.classList.add('active-sort'); th.innerHTML = th.dataset.label + (currentSort.direction === 'asc' ? ' ↑' : ' ↓');
+                    } else { th.innerHTML = th.dataset.label; }
+                });
+            }
+
+            function updateDetails(item, mode, filePath) {
+                const dh = document.getElementById('detailsHeader'); if (dh) dh.style.display = 'flex';
+                document.getElementById('explanationBox').style.display = 'none';
+                if (mode === 'local') {
+                    document.getElementById('detTime').textContent = new Date(item.timestamp).toLocaleString();
+                    document.getElementById('jbBtnRestore').style.display = 'block';
+                    document.getElementById('jbBtnRestore').onclick = () => vscode.postMessage({ command: 'restore', snapshotId: item.id, filePath: item.filePath });
+                    document.getElementById('jbBtnBranch').onclick = () => vscode.postMessage({ command: 'compareWithBranch', filePath: filePath, snapshot: item });
+                    document.getElementById('jbBtnBranchVersion').onclick = () => vscode.postMessage({ command: 'compareWithBranchVersion', filePath: filePath, snapshot: item });
+                    document.getElementById('jbBtnExplain').onclick = () => { document.getElementById('jbBtnExplain').textContent = 'Thinking...'; vscode.postMessage({ command: 'explain', snapshot: item }); };
+                } else {
+                    document.getElementById('detTime').textContent = (item.hash ? item.hash.substring(0,7) : "") + ' - ' + item.author;
+                    document.getElementById('jbBtnRestore').style.display = 'none';
+                    document.getElementById('jbBtnBranch').onclick = () => vscode.postMessage({ command: 'compareWithBranch', filePath: filePath, commit: item });
+                    document.getElementById('jbBtnBranchVersion').onclick = () => vscode.postMessage({ command: 'compareWithBranchVersion', filePath: filePath, commit: item });
+                    document.getElementById('jbBtnExplain').onclick = () => { document.getElementById('jbBtnExplain').textContent = 'Thinking...'; vscode.postMessage({ command: 'explain', commit: item }); };
                 }
-                vscode.postMessage({ command: "ready" });
-                updateLayoutButtons();
-            })();
-        </script></body></html>`;
+            }
+
+            vscode.postMessage({ command: "ready" });
+            updateLayoutButtons();
+        })();`;
+
+        return `<!DOCTYPE html><html><head><meta charset="UTF-8"><style>body { margin: 0; padding: 0; color: var(--vscode-editor-foreground); background-color: var(--vscode-editor-background); font-family: var(--vscode-font-family); height: 100vh; overflow: hidden; display: flex; flex-direction: ${containerFlex}; } .jb-main { display: flex; flex: 1; overflow: hidden; order: 0; min-height: 0; } .jb-table-wrapper { flex: 1; overflow: auto; border-right: 1px solid var(--vscode-panel-border); min-height: 0; } .jb-table { width: 100%; border-collapse: collapse; table-layout: fixed; } .jb-tr { cursor: pointer; border-bottom: 1px solid rgba(128,128,128,0.05); } .jb-tr:hover { background-color: var(--vscode-list-hoverBackground); } .jb-tr.selected { background-color: var(--vscode-list-activeSelectionBackground); color: var(--vscode-list-activeSelectionForeground); } .jb-td { padding: 4px 8px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: 0.85em; } ${sharedStyle}</style></head><body><div id="diffContainer" class="diff-container" style="order: ${diffOrder}; ${diffBorder} flex: 1; min-height: 200px;">${diffHeaderHtml}<div id="detailsHeader" style="display:none;"><div style="display:flex; gap:8px; align-items:center;"><span id="detTime" style="font-size:0.85em; font-weight:bold; opacity:0.8;"></span></div><div class="actions" style="border:none; padding:0; background:transparent;"><button id="jbBtnRestore">Restore</button><button id="jbBtnBranch">Branch</button><button id="jbBtnBranchVersion">Version</button><button id="jbBtnExplain">✨ Explain</button></div></div><div id="explanationBox" style="margin: 8px 12px; font-size: 0.85em; white-space: pre-wrap; display: none; background: var(--vscode-editor-lineHighlightBackground); padding: 8px; border-radius: 4px;"></div><div id="diffContent" class="diff-content"></div></div><div class="jb-main"><div class="jb-table-wrapper"><table class="jb-table"><thead><tr id="headerRow"></tr></thead><tbody id="list"></tbody></table></div></div><script>${jbScript}</script></body></html>`;
     }
 }

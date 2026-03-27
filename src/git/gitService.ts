@@ -43,9 +43,9 @@ export class GitService {
         if (!workspaceFolder) return "";
 
         const canonicalPath = await this.getCanonicalPath(filePath);
-        const range = `${startLine + 1},${endLine + 1}`;
-        // Note: hash1 is base, hash2 is target. To see progress forward, hash1 should be the older commit.
-        const args = ['-c', 'color.ui=false', 'diff', hash1, hash2, `-L${range}:${canonicalPath}`];
+        const rangeArgs = (startLine === -1 && endLine === -1) ? [] : [`-L${startLine + 1},${endLine + 1}:${canonicalPath}`];
+        const args = ['-c', 'color.ui=false', 'diff', hash1, hash2, '--unified=1000', ...rangeArgs];
+        if (rangeArgs.length === 0) args.push('--', canonicalPath);
         
         return new Promise((resolve) => {
             const git = cp.spawn('git', args, { cwd: workspaceFolder.uri.fsPath });

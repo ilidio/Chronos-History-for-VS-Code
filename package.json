@@ -64,7 +64,7 @@
             "editor",
             "panel"
           ],
-          "default": "editor",
+          "default": "panel",
           "description": "Choose where to display the history list: 'editor' (Standard tab) or 'panel' (Bottom panel like JetBrains IDEs)."
         },
         "chronos.ui.useJetBrainsStyle": {
@@ -81,6 +81,15 @@
           "type": "boolean",
           "default": true,
           "description": "Synchronize scrolling in the diff view."
+        },
+        "chronos.diff.defaultAction": {
+          "type": "string",
+          "enum": [
+            "preview",
+            "openDiff"
+          ],
+          "default": "openDiff",
+          "description": "Choose the default action when clicking a history entry: 'preview' (Show rich HTML preview in the view) or 'openDiff' (Open the native VS Code diff editor)."
         },
         "chronos.diff.enableHtmlPreview": {
           "type": "boolean",
