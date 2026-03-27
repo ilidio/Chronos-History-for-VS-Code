@@ -180,7 +180,7 @@ Safely try out risky refactors without Git branches.
 | Setting | Default | Description |
 | :--- | :--- | :--- |
 | `chronos.ui.useJetBrainsStyle` | `true` | Toggle between Table and Card UI styles. |
-| `chronos.viewMode` | `editor` | Display history in a main `editor` tab or a bottom `panel`. |
+| `chronos.viewMode` | `panel` | Display history in a main `editor` tab or a bottom `panel`. |
 | `chronos.ai.apiKey` | `""` | Your Google Gemini API Key. |
 | `chronos.ai.language` | `English` | Language for AI summaries and briefings. |
 | `chronos.showDiffSideBySide` | `true` | Use native side-by-side diff editor. |
