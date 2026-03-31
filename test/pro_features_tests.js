@@ -18,16 +18,20 @@ async function runProTests() {
 
     try {
         const context = new mockVscode.ExtensionContext();
-        const rootUri = mockVscode.Uri.file('/globalStorage');
-        const indexUri = mockVscode.Uri.joinPath(rootUri, 'index.json');
+        let storage = new HistoryStorage(context);
         
+        const getIndexUri = async () => {
+             const root = await storage.getWorkspaceStorageRoot();
+             return mockVscode.Uri.joinPath(root, 'index.json');
+        };
+
         const saveIndex = async (data) => {
+            const indexUri = await getIndexUri();
             await mockVscode.workspace.fs.writeFile(indexUri, new TextEncoder().encode(JSON.stringify(data, null, 2)));
         };
 
         // --- Test 1: Search Toggle (Metadata vs Content) ---
         console.log('\n[Test 1] Search Toggle (Metadata vs Content)');
-        let storage = new HistoryStorage(context);
         await storage.init();
         
         const snap1 = 'snap-meta';
@@ -41,8 +45,10 @@ async function runProTests() {
         };
 
         await saveIndex(indexData);
-        await mockVscode.workspace.fs.writeFile(mockVscode.Uri.joinPath(rootUri, snap1), new TextEncoder().encode('some code here'));
-        await mockVscode.workspace.fs.writeFile(mockVscode.Uri.joinPath(rootUri, snap2), new TextEncoder().encode('export function hidden() {}'));
+        const rootUri = (await getIndexUri()).path.replace('/index.json', '');
+        
+        await mockVscode.workspace.fs.writeFile(mockVscode.Uri.file(path.join(rootUri, snap1)), new TextEncoder().encode('some code here'));
+        await mockVscode.workspace.fs.writeFile(mockVscode.Uri.file(path.join(rootUri, snap2)), new TextEncoder().encode('export function hidden() {}'));
 
         const metaResults = await storage.search('Alpha', false);
         if (metaResults.length === 1 && metaResults[0].id === snap1) {
@@ -68,8 +74,6 @@ async function runProTests() {
 
         // --- Test 2: Pinning & Pruning ---
         console.log('\n[Test 2] Pinning & Pruning');
-        storage = new HistoryStorage(context);
-        await storage.init();
         
         const oldSnapId = 'old-snap';
         const pinnedSnapId = 'pinned-snap';
@@ -84,15 +88,13 @@ async function runProTests() {
         };
 
         await saveIndex(pruneIndexData);
-        await mockVscode.workspace.fs.writeFile(mockVscode.Uri.joinPath(rootUri, oldSnapId), new TextEncoder().encode('old'));
-        await mockVscode.workspace.fs.writeFile(mockVscode.Uri.joinPath(rootUri, pinnedSnapId), new TextEncoder().encode('pinned'));
+        await mockVscode.workspace.fs.writeFile(mockVscode.Uri.file(path.join(rootUri, oldSnapId)), new TextEncoder().encode('old'));
+        await mockVscode.workspace.fs.writeFile(mockVscode.Uri.file(path.join(rootUri, pinnedSnapId)), new TextEncoder().encode('pinned'));
 
         console.log('Running pruning (30 days limit)...');
         await storage.prune(30);
 
-        storage = new HistoryStorage(context);
-        await storage.init();
-        const finalHistory = await storage.getProjectHistory();
+        const finalHistory = await storage.getProjectHistory(true); // Force reload
 
         const hasOld = finalHistory.some(s => s.id === oldSnapId);
         const hasPinned = finalHistory.some(s => s.id === pinnedSnapId);
@@ -106,6 +108,7 @@ async function runProTests() {
         // --- Test 3: Toggle Pin API ---
         console.log('\n[Test 3] Toggle Pin API');
         const targetSnap = finalHistory.find(s => s.id === pinnedSnapId);
+        if (!targetSnap) throw new Error('Pinned snapshot missing after pruning!');
         const initialState = targetSnap.pinned || false;
         const newState = await storage.togglePin(pinnedSnapId);
         

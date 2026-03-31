@@ -24,18 +24,21 @@ async function runTests() {
 
         // Setup Context
         const context = new mockVscode.ExtensionContext();
+        let storage = new HistoryStorage(context);
         
         // Helper to update index on disk
-        const rootUri = mockVscode.Uri.file('/globalStorage');
-        const indexUri = mockVscode.Uri.joinPath(rootUri, 'index.json');
+        const getIndexUri = async () => {
+             const root = await storage.getWorkspaceStorageRoot();
+             return mockVscode.Uri.joinPath(root, 'index.json');
+        };
         
         const saveIndex = async (data) => {
+            const indexUri = await getIndexUri();
             await mockVscode.workspace.fs.writeFile(indexUri, new TextEncoder().encode(JSON.stringify(data)));
         };
 
         // --- Test 1: Full-Text Search ---
         console.log('\n[Test 1] Full-Text Search');
-        let storage = new HistoryStorage(context);
         
         const snapshotId = 'snap-1';
         const snapshotContent = 'This is a secret function with hidden logic.';
@@ -51,8 +54,9 @@ async function runTests() {
         };
 
         await saveIndex(indexData);
+        const rootUri = (await getIndexUri()).path.replace('/index.json', '');
         await mockVscode.workspace.fs.writeFile(
-            mockVscode.Uri.joinPath(rootUri, snapshotId), 
+            mockVscode.Uri.file(path.join(rootUri, snapshotId)), 
             new TextEncoder().encode(snapshotContent)
         );
         
@@ -69,23 +73,31 @@ async function runTests() {
 
         // --- Test 2: Activity View ---
         console.log('\n[Test 2] Activity View');
-        storage = new HistoryStorage(context); // New instance to clear cache
-        const activityProvider = new ActivityProvider(storage);
+        await storage.init(); 
         
+        // Read current index from disk first
+        const indexUriForTest2 = await getIndexUri();
+        const rawIndexT2 = await mockVscode.workspace.fs.readFile(indexUriForTest2);
+        let currentIndex = JSON.parse(new TextDecoder().decode(rawIndexT2));
+
         const recentSnapshots = [
             { id: 's2', timestamp: Date.now(), filePath: 'active.ts', eventType: 'save', storagePath: 's2' },
             { id: 's3', timestamp: Date.now(), filePath: 'active.ts', eventType: 'save', storagePath: 's3' },
             { id: 's4', timestamp: Date.now() - 100000, filePath: 'other.ts', eventType: 'save', storagePath: 's4' }
         ];
         // Merge with existing
-        indexData.snapshots.push(...recentSnapshots);
-        await saveIndex(indexData);
+        currentIndex.snapshots.push(...recentSnapshots);
+        await saveIndex(currentIndex);
         
         // Create these files in workspace too
         await mockVscode.workspace.fs.writeFile(mockVscode.Uri.file('/workspace/active.ts'), new TextEncoder().encode(''));
         await mockVscode.workspace.fs.writeFile(mockVscode.Uri.file('/workspace/other.ts'), new TextEncoder().encode(''));
 
-        const activityItems = await activityProvider.getChildren();
+        // Force storage to reload from disk
+        await storage.getProjectHistory(); 
+
+        const activityProvider = new ActivityProvider(storage);
+        const activityItems = await activityProvider.getChildren(undefined, true);
         const activeItem = activityItems.find(i => i.label === 'active.ts');
         
         if (activeItem && activeItem.count === 2) {
@@ -97,23 +109,27 @@ async function runTests() {
 
         // --- Test 3: Deleted Files ---
         console.log('\n[Test 3] Deleted File Resurrection');
-        storage = new HistoryStorage(context);
-        const manager = new HistoryManager(context, storage);
+        await storage.init();
+        const { GitService } = require('../out/git/gitService');
+        const { GitIgnoreService } = require('../out/git/gitIgnoreService');
+        const gitService = new GitService();
+        const gitIgnoreService = new GitIgnoreService();
+        const manager = new HistoryManager(context, storage, gitService, gitIgnoreService);
         const deletedProvider = new DeletedFilesProvider(manager, storage);
         
         // Add a snapshot for a file that does NOT exist in fsStore
-        indexData.snapshots.push({
+        currentIndex.snapshots.push({
             id: 'del1',
             timestamp: Date.now(),
             filePath: 'deleted.ts',
             eventType: 'save',
             storagePath: 'del1'
         });
-        await saveIndex(indexData);
+        await saveIndex(currentIndex);
         
         // Ensure deleted.ts is NOT in /workspace (it isn't by default)
 
-        const deletedFiles = await deletedProvider.getChildren();
+        const deletedFiles = await deletedProvider.getChildren(undefined, true);
         const deletedItem = deletedFiles.find(i => i.label === 'deleted.ts');
         const secretItem = deletedFiles.find(i => i.label === 'secret.ts');
 
@@ -137,6 +153,7 @@ async function runTests() {
         await manager.startExperiment('MyExperiment');
         
         // Reload index to check for new snapshot
+        const indexUri = await getIndexUri();
         const rawIndex = await mockVscode.workspace.fs.readFile(indexUri);
         const savedIndexData = JSON.parse(new TextDecoder().decode(rawIndex));
         

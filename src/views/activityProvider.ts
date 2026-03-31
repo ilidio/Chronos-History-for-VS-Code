@@ -17,10 +17,10 @@ export class ActivityProvider implements vscode.TreeDataProvider<ActivityItem> {
         return element;
     }
 
-    async getChildren(element?: ActivityItem): Promise<ActivityItem[]> {
+    async getChildren(element?: ActivityItem, force: boolean = false): Promise<ActivityItem[]> {
         if (element) return [];
 
-        const snapshots = await this.storage.getProjectHistory();
+        const snapshots = await this.storage.getProjectHistory(force);
         const oneDayAgo = Date.now() - 24 * 60 * 60 * 1000;
         const recentSnapshots = snapshots.filter(s => s.timestamp > oneDayAgo);
 

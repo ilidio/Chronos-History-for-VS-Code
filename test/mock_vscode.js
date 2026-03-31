@@ -83,6 +83,7 @@ const mockVscode = {
         setStatusBarMessage: () => {},
         createTextEditorDecorationType: () => ({ dispose: () => {} }),
         onDidChangeActiveTextEditor: () => ({ dispose: () => {} }),
+        onDidChangeTextEditorSelection: () => ({ dispose: () => {} }),
         createWebviewPanel: (viewType, title, column, options) => {
             console.log(`createWebviewPanel: ${title}`);
             return {

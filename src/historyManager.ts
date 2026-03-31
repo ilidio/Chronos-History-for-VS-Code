@@ -489,8 +489,8 @@ export class HistoryManager {
         }
     }
 
-    public async getDeletedFiles(): Promise<string[]> {
-        const snapshots = await this.storage.getProjectHistory();
+    public async getDeletedFiles(force: boolean = false): Promise<string[]> {
+        const snapshots = await this.storage.getProjectHistory(force);
         const allPaths = new Set<string>();
         snapshots.forEach(s => {
             if (s.filePath && s.filePath.trim() !== '') {

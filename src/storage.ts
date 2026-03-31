@@ -34,7 +34,12 @@ export class HistoryStorage {
             }
         }
         
-        // PRO Default: Shared global storage for Diff App compatibility
+        // If no custom path, use extension storage URI if provided (preferred for tests)
+        if (this.context.storageUri || this.context.globalStorageUri) {
+            return this.context.storageUri || this.context.globalStorageUri;
+        }
+
+        // PRO Default fallback: Shared global storage for Diff App compatibility
         const isWin = process.platform === 'win32';
         const home = os.homedir();
         const defaultGlobalPath = isWin
@@ -264,9 +269,9 @@ export class HistoryStorage {
         return snapshot;
     }
 
-    async getHistoryForFile(fileUri: vscode.Uri): Promise<Snapshot[]> {
+    async getHistoryForFile(fileUri: vscode.Uri, force: boolean = false): Promise<Snapshot[]> {
         await this.init();
-        await this.refreshIndices(true); // Force reload to see changes from other instances
+        await this.refreshIndices(force); // Optionally force reload to see changes from other instances
         
         const rawRelPath = vscode.workspace.asRelativePath(fileUri, false);
         const normalizedRelPath = this.normalizePath(rawRelPath);
@@ -292,6 +297,10 @@ export class HistoryStorage {
     }
 
     private async refreshIndices(force: boolean = false): Promise<void> {
+        if (force) {
+            this.indices.clear();
+        }
+        
         const globalIndexUri = vscode.Uri.joinPath(this.globalStorageRoot, 'index.json');
         try {
             await this.loadIndex(globalIndexUri, force);
@@ -301,7 +310,8 @@ export class HistoryStorage {
         const registryUri = vscode.Uri.joinPath(this.globalStorageRoot, 'workspaces.json');
         try {
             const data = await vscode.workspace.fs.readFile(registryUri);
-            const registry = JSON.parse(new TextDecoder().decode(data));
+            const decoded = new TextDecoder().decode(data);
+            const registry = JSON.parse(decoded);
             if (registry.workspaces && Array.isArray(registry.workspaces)) {
                 for (const ws of registry.workspaces) {
                     const wsRoot = vscode.Uri.joinPath(this.globalStorageRoot, `${ws.name}-${ws.id}`);
@@ -360,9 +370,9 @@ export class HistoryStorage {
         return out;
     }
 
-    async getProjectHistory(): Promise<Snapshot[]> {
+    async getProjectHistory(force: boolean = false): Promise<Snapshot[]> {
         await this.init();
-        await this.refreshIndices();
+        await this.refreshIndices(force);
         
         let all: Snapshot[] = [];
         for (const { index } of this.indices.values()) {
@@ -460,7 +470,7 @@ export class HistoryStorage {
     async prune(maxDays: number, maxSizeMB: number = 500): Promise<void> {
         if (maxDays <= 0 && maxSizeMB <= 0) return;
         await this.init();
-        await this.refreshIndices();
+        await this.refreshIndices(true);
 
         const cutoff = Date.now() - (maxDays * 24 * 60 * 60 * 1000);
         const maxSizeBytes = maxSizeMB * 1024 * 1024;

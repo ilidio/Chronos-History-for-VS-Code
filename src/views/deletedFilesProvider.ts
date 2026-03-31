@@ -16,12 +16,12 @@ export class DeletedFilesProvider implements vscode.TreeDataProvider<DeletedFile
         return element;
     }
 
-    async getChildren(element?: DeletedFileItem): Promise<DeletedFileItem[]> {
+    async getChildren(element?: DeletedFileItem, force: boolean = false): Promise<DeletedFileItem[]> {
         if (element) {
             return []; // Flat list
         }
 
-        const deletedFiles = await this.manager.getDeletedFiles();
+        const deletedFiles = await this.manager.getDeletedFiles(force);
         return deletedFiles.map(filePath => new DeletedFileItem(filePath));
     }
 }
