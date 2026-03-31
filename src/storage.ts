@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
+import * as os from 'os';
 import { v4 as uuidv4 } from 'uuid';
 import { Snapshot, HistoryIndex, ChronosConfig } from './types';
 
@@ -10,7 +11,84 @@ export class HistoryStorage {
     private saveQueue: Promise<void> = Promise.resolve();
 
     constructor(private context: vscode.ExtensionContext, private outputChannel?: vscode.OutputChannel) {
-        this.globalStorageRoot = context.storageUri || context.globalStorageUri;
+        this.globalStorageRoot = this.resolveGlobalStorageRoot();
+    }
+
+    private resolveGlobalStorageRoot(): vscode.Uri {
+        const config = vscode.workspace.getConfiguration('chronos');
+        const customPath = config.get<string>('customStoragePath', '');
+        
+        if (customPath) {
+            try {
+                let resolvedPath = customPath;
+                if (customPath.startsWith('~')) {
+                    resolvedPath = path.join(os.homedir(), customPath.slice(1));
+                }
+                // Handle environment variables like %APPDATA% or $HOME if they happen to be used
+                resolvedPath = resolvedPath.replace(/%([^%]+)%/g, (_, n) => process.env[n] || n);
+                resolvedPath = resolvedPath.replace(/\$([A-Z_]+)/g, (_, n) => process.env[n] || n);
+                
+                return vscode.Uri.file(path.resolve(resolvedPath));
+            } catch (e) {
+                this.log(`Failed to resolve custom storage path: ${e}`);
+            }
+        }
+        
+        // PRO Default: Shared global storage for Diff App compatibility
+        const isWin = process.platform === 'win32';
+        const home = os.homedir();
+        const defaultGlobalPath = isWin
+            ? path.join(process.env.LOCALAPPDATA || path.join(home, 'AppData', 'Local'), '.chronos-history')
+            : path.join(home, '.chronos-history');
+        
+        return vscode.Uri.file(defaultGlobalPath);
+    }
+
+    private generateProjectHash(p: string): string {
+        // Simple fast string hashing for folder names
+        let hash = 0;
+        for (let i = 0; i < p.length; i++) {
+            const char = p.charCodeAt(i);
+            hash = ((hash << 5) - hash) + char;
+            hash = hash & hash; // Convert to 32bit integer
+        }
+        return Math.abs(hash).toString(16).substring(0, 8);
+    }
+
+    private async registerWorkspace(root: vscode.Uri, workspaceFolder: vscode.WorkspaceFolder, index: HistoryIndex): Promise<void> {
+        // 1. Tag the local index.json with project metadata
+        if (!index.workspace) {
+            index.workspace = {
+                id: this.generateProjectHash(workspaceFolder.uri.fsPath),
+                name: workspaceFolder.name,
+                rootPath: workspaceFolder.uri.fsPath,
+                lastActivity: Date.now()
+            };
+            this.log(`Tagging new workspace: ${index.workspace.name}`);
+        } else {
+            index.workspace.lastActivity = Date.now();
+        }
+
+        // 2. Register in the global workspaces.json for the Diff App
+        const registryUri = vscode.Uri.joinPath(this.globalStorageRoot, 'workspaces.json');
+        try {
+            let registry = { workspaces: [] as any[] };
+            try {
+                const data = await vscode.workspace.fs.readFile(registryUri);
+                registry = JSON.parse(new TextDecoder().decode(data));
+            } catch (e) {}
+
+            const existingIdx = registry.workspaces.findIndex((w: any) => w.id === index.workspace!.id || w.rootPath === index.workspace!.rootPath);
+            if (existingIdx >= 0) {
+                registry.workspaces[existingIdx] = index.workspace;
+            } else {
+                registry.workspaces.push(index.workspace);
+            }
+
+            await vscode.workspace.fs.writeFile(registryUri, new TextEncoder().encode(JSON.stringify(registry, null, 2)));
+        } catch (e) {
+            this.log(`Registry update failed: ${e}`);
+        }
     }
 
     private log(msg: string) {
@@ -25,12 +103,20 @@ export class HistoryStorage {
     }
 
     async init(): Promise<void> {
+        // Always refresh root in case config changed
+        const newRoot = this.resolveGlobalStorageRoot();
+        if (this.globalStorageRoot.toString() !== newRoot.toString()) {
+            this.globalStorageRoot = newRoot;
+            this.initialized = false; 
+            this.indices.clear(); // Clear cached indices if storage root changed
+        }
+
         if (this.initialized) return;
         
         try {
             await vscode.workspace.fs.createDirectory(this.globalStorageRoot);
             this.initialized = true;
-            this.log('Initialized');
+            this.log(`Initialized at: ${this.globalStorageRoot.fsPath}`);
         } catch (e) {
             this.log(`Global init failed: ${e}`);
         }
@@ -38,8 +124,11 @@ export class HistoryStorage {
 
     async getWorkspaceStorageRoot(): Promise<vscode.Uri> {
         await this.init();
-        if (vscode.workspace.workspaceFolders && vscode.workspace.workspaceFolders.length > 0) {
-            const { root } = await this.getStorageForFile(vscode.workspace.workspaceFolders[0].uri);
+        const activeEditor = vscode.window.activeTextEditor;
+        const targetUri = activeEditor ? activeEditor.document.uri : (vscode.workspace.workspaceFolders?.[0]?.uri);
+        
+        if (targetUri) {
+            const { root } = await this.getStorageForFile(targetUri);
             return root;
         }
         return this.globalStorageRoot;
@@ -47,12 +136,22 @@ export class HistoryStorage {
 
     private async getStorageForFile(fileUri: vscode.Uri): Promise<{ root: vscode.Uri, indexUri: vscode.Uri }> {
         const config = vscode.workspace.getConfiguration('chronos');
-        const saveInProject = config.get<boolean>('saveInProjectFolder', false);        
+        const saveInProject = config.get<boolean>('saveInProjectFolder', false);
+        const customPath = config.get<string>('customStoragePath', '');
+        
         let root = this.globalStorageRoot;
         const workspaceFolder = vscode.workspace.getWorkspaceFolder(fileUri);
         
         if (saveInProject && workspaceFolder) {
             root = vscode.Uri.joinPath(workspaceFolder.uri, '.history');
+        } else {
+            // PRO isolation: When using global shared storage, each project gets a subfolder
+            // This is critical for the Diff App to know which project is which.
+            if (workspaceFolder) {
+                const projectFolderName = workspaceFolder.name;
+                const projectHash = this.generateProjectHash(workspaceFolder.uri.fsPath);
+                root = vscode.Uri.joinPath(this.globalStorageRoot, `${projectFolderName}-${projectHash}`);
+            }
         }
 
         return {
@@ -70,12 +169,31 @@ export class HistoryStorage {
             const data = await vscode.workspace.fs.readFile(indexUri);
             const decoded = new TextDecoder().decode(data);
             const index = JSON.parse(decoded);
+            
+            // Pro metadata maintenance
+            const workspaceFolder = vscode.workspace.workspaceFolders?.find(f => 
+                indexUri.toString().includes(f.uri.toString()) || 
+                (index.workspace && index.workspace.rootPath === f.uri.fsPath)
+            );
+            if (workspaceFolder) {
+                await this.registerWorkspace(root, workspaceFolder, index);
+            }
+
             this.indices.set(key, { index, root });
             this.log(`Loaded index: ${key} (${index.snapshots.length} snapshots)`);
             return index;
         } catch (e) {
             // Only set empty if it doesn't exist, don't cache permanent failures
             const newIndex: HistoryIndex = { snapshots: [] };
+            
+            // Try to initialize workspace metadata for new index
+            const workspaceFolder = vscode.workspace.workspaceFolders?.find(f => 
+                indexUri.toString().includes(f.uri.toString())
+            );
+            if (workspaceFolder) {
+                await this.registerWorkspace(root, workspaceFolder, newIndex);
+            }
+
             this.indices.set(key, { index: newIndex, root });
             return newIndex;
         }
@@ -175,14 +293,34 @@ export class HistoryStorage {
 
     private async refreshIndices(force: boolean = false): Promise<void> {
         const globalIndexUri = vscode.Uri.joinPath(this.globalStorageRoot, 'index.json');
-        await this.loadIndex(globalIndexUri, force);
+        try {
+            await this.loadIndex(globalIndexUri, force);
+        } catch {}
 
+        // 1. Scan projects registered in workspaces.json
+        const registryUri = vscode.Uri.joinPath(this.globalStorageRoot, 'workspaces.json');
+        try {
+            const data = await vscode.workspace.fs.readFile(registryUri);
+            const registry = JSON.parse(new TextDecoder().decode(data));
+            if (registry.workspaces && Array.isArray(registry.workspaces)) {
+                for (const ws of registry.workspaces) {
+                    const wsRoot = vscode.Uri.joinPath(this.globalStorageRoot, `${ws.name}-${ws.id}`);
+                    const wsIndexUri = vscode.Uri.joinPath(wsRoot, 'index.json');
+                    try {
+                        await vscode.workspace.fs.stat(wsIndexUri);
+                        await this.loadIndex(wsIndexUri, force);
+                    } catch {}
+                }
+            }
+        } catch {}
+
+        // 2. Scan active workspace folders (.history or shared subfolders)
         if (vscode.workspace.workspaceFolders) {
             for (const folder of vscode.workspace.workspaceFolders) {
-                const localIndexUri = vscode.Uri.joinPath(folder.uri, '.history', 'index.json');
+                const { indexUri } = await this.getStorageForFile(folder.uri);
                 try {
-                    await vscode.workspace.fs.stat(localIndexUri);
-                    await this.loadIndex(localIndexUri, force);
+                    await vscode.workspace.fs.stat(indexUri);
+                    await this.loadIndex(indexUri, force);
                 } catch {
                     // Skip
                 }
@@ -195,7 +333,7 @@ export class HistoryStorage {
         await this.refreshIndices(true);
         let out = `Chronos Storage Diagnostics\n`;
         out += `============================\n`;
-        out += `Global Storage Root: ${this.globalStorageRoot.toString()}\n`;
+        out += `Global Storage Root: ${this.globalStorageRoot.fsPath}\n`;
         out += `Loaded Indices: ${this.indices.size}\n\n`;
 
         const activeEditor = vscode.window.activeTextEditor;
@@ -211,7 +349,7 @@ export class HistoryStorage {
 
         for (const [key, { index, root }] of this.indices.entries()) {
             out += `Index: ${key}\n`;
-            out += `Root: ${root.toString()}\n`;
+            out += `Root: ${root.fsPath}\n`;
             out += `Snapshots: ${index.snapshots.length}\n`;
             if (index.snapshots.length > 0) {
                 const last = index.snapshots[index.snapshots.length - 1];
@@ -250,6 +388,21 @@ export class HistoryStorage {
     private async saveIndex(index: HistoryIndex, indexUri: vscode.Uri) {
         this.saveQueue = this.saveQueue.then(async () => {
             try {
+                // Update activity timestamp before saving
+                if (index.workspace) {
+                    index.workspace.lastActivity = Date.now();
+                    
+                    // Re-register to update the global workspaces.json
+                    const workspaceFolder = vscode.workspace.workspaceFolders?.find(f => 
+                        indexUri.toString().includes(f.uri.toString()) || 
+                        (index.workspace && index.workspace.rootPath === f.uri.fsPath)
+                    );
+                    if (workspaceFolder) {
+                        const root = vscode.Uri.joinPath(indexUri, '..');
+                        await this.registerWorkspace(root, workspaceFolder, index);
+                    }
+                }
+
                 const data = new TextEncoder().encode(JSON.stringify(index, null, 2));
                 await vscode.workspace.fs.writeFile(indexUri, data);
             } catch (e) {

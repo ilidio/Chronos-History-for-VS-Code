@@ -17,8 +17,20 @@ export interface HistoryEntry extends Snapshot {
     displayDate?: string;
 }
 
+export interface WorkspaceMetadata {
+    id: string; // Hash or unique identifier
+    name: string; // Folder name
+    rootPath: string; // Original workspace path
+    lastActivity: number;
+}
+
 export interface HistoryIndex {
+    workspace?: WorkspaceMetadata;
     snapshots: Snapshot[];
+}
+
+export interface WorkspaceRegistry {
+    workspaces: WorkspaceMetadata[];
 }
 
 export interface ChronosConfig {

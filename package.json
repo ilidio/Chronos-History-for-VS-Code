@@ -2,7 +2,7 @@
   "name": "chronos-history",
   "displayName": "Chronos History",
   "description": "Comprehensive Chronos and Git History tracking for VS Code.",
-  "version": "4.3.1",
+  "version": "4.3.3",
   "publisher": "IldioMartins",
   "license": "MIT",
   "icon": "resources/icon.png",
@@ -167,6 +167,11 @@
           "default": false,
           "description": "If enabled, Chronos history will be stored in a .history folder in the project root instead of internal extension storage."
         },
+        "chronos.customStoragePath": {
+          "type": "string",
+          "default": "",
+          "description": "Optional: A custom global path to store all Chronos history. If empty, uses internal extension storage. Use this to share history with the Chronos Desktop App. (e.g. ~/.chronos-history)"
+        },
         "gitHistory.selection.maxCommits": {
           "type": "number",
           "default": 100,
@@ -293,6 +298,11 @@
         "title": "Generate Changelog (AI)...",
         "category": "Chronos",
         "icon": "$(list-unordered)"
+      },
+      {
+        "command": "chronos.useSharedStorage",
+        "title": "Use External Shared Storage",
+        "category": "Chronos"
       },
       {
         "command": "chronos.showLogs",

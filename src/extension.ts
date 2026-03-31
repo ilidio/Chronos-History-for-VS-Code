@@ -252,6 +252,16 @@ export function activate(context: vscode.ExtensionContext) {
             vscode.commands.registerCommand('_chronos.savePatch', async (diffText: string) => {
                 await saveDiffAsPatch(diffText);
             }),
+            vscode.commands.registerCommand('chronos.useSharedStorage', async () => {
+                const home = os.homedir();
+                const defaultPath = process.platform === 'win32' 
+                    ? path.join(process.env.LOCALAPPDATA || path.join(home, 'AppData', 'Local'), '.chronos-history')
+                    : path.join(home, '.chronos-history');
+                    
+                const config = vscode.workspace.getConfiguration('chronos');
+                await config.update('customStoragePath', defaultPath, vscode.ConfigurationTarget.Global);
+                vscode.window.showInformationMessage(`Chronos: Global storage path set to ${defaultPath}`);
+            }),
             vscode.commands.registerCommand('chronos.showLogs', () => outputChannel.show(true)),
             vscode.commands.registerCommand('chronos.runDiagnostics', runDiagnostics),
             vscode.commands.registerCommand('chronos.exportHistory', exportHistory),
@@ -282,6 +292,17 @@ export function activate(context: vscode.ExtensionContext) {
         }).catch(err => {
             outputChannel.appendLine('Storage init failed: ' + err);
         });
+
+        context.subscriptions.push(
+            vscode.workspace.onDidChangeConfiguration(async e => {
+                if (e.affectsConfiguration('chronos.customStoragePath') || e.affectsConfiguration('chronos.saveInProjectFolder')) {
+                    await storage.init();
+                    outputChannel.appendLine('Storage configuration changed, re-initialized.');
+                    // Refresh indices to ensure we see history from new location
+                    activityProvider.refresh();
+                }
+            })
+        );
     } catch (e) {
         vscode.window.showErrorMessage('Chronos Activation Failed: ' + e);
         console.error(e);
