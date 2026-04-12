@@ -202,6 +202,45 @@ export class GitService {
         });
     }
 
+    /**
+     * Finds every time a specific symbol or text was changed in the file history.
+     * Uses 'git log -G' to find patches that contain the pattern.
+     */
+    async getHistoryBySearch(filePath: string, pattern: string, config: GitHistoryConfig): Promise<GitCommit[]> {
+        const workspaceFolder = vscode.workspace.getWorkspaceFolder(vscode.Uri.file(filePath));
+        if (!workspaceFolder) return [];
+
+        const canonicalPath = await this.getCanonicalPath(filePath);
+        // -G looks for patches that match the regex. -p shows the patch.
+        const args = ['-c', 'color.ui=false', 'log', '-p', `-G${pattern}`, '--', canonicalPath];
+        
+        return new Promise((resolve) => {
+            const git = cp.spawn('git', args, { cwd: workspaceFolder.uri.fsPath, env: process.env });
+            let stdout = '';
+            git.stdout.on('data', data => stdout += data);
+            git.on('close', () => resolve(this.parseGitLogL(stdout, config.maxCommits)));
+        });
+    }
+
+    /**
+     * Finds occurrences of a string adding or removing in the history.
+     * Uses 'git log -S' (pickaxe).
+     */
+    async getHistoryBySymbol(filePath: string, symbol: string, config: GitHistoryConfig): Promise<GitCommit[]> {
+        const workspaceFolder = vscode.workspace.getWorkspaceFolder(vscode.Uri.file(filePath));
+        if (!workspaceFolder) return [];
+
+        const canonicalPath = await this.getCanonicalPath(filePath);
+        const args = ['-c', 'color.ui=false', 'log', '-p', `-S${symbol}`, '--', canonicalPath];
+        
+        return new Promise((resolve) => {
+            const git = cp.spawn('git', args, { cwd: workspaceFolder.uri.fsPath, env: process.env });
+            let stdout = '';
+            git.stdout.on('data', data => stdout += data);
+            git.on('close', () => resolve(this.parseGitLogL(stdout, config.maxCommits)));
+        });
+    }
+
     async getDiff(file1: string, file2: string): Promise<string> {
         // git diff --no-index <file1> <file2>
         const args = ['-c', 'color.ui=false', 'diff', '--unified=999999', '--no-index', file1, file2];
