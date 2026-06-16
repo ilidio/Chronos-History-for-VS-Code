@@ -558,12 +558,14 @@ export class HistoryViewProvider {
             let baseFilePath = '', explainEnabled = false, aiConfigured = false;
             let snapshots = [], selectedIndex = -1;
             let currentSort = { column: 'timestamp', direction: 'desc' };
+            let currentSelection = null;
 
             window.onload = () => { vscode.postMessage({ command: 'ready' }); updateLayoutButtons(); };
             window.addEventListener('message', event => {
                 const msg = event.data;
                 if (msg.command === 'loadHistory') {
                     baseFilePath = msg.filePath; explainEnabled = !!msg.explainEnabled; aiConfigured = !!msg.aiConfigured;
+                    currentSelection = msg.selection || null;
                     const items = []; (msg.snapshots || []).forEach(s => { if (s.type === 'cluster') items.push(...s.items); else items.push(s); });
                     snapshots = items.map(s => ({ item: s, element: null }));
                     renderList();
@@ -605,7 +607,7 @@ export class HistoryViewProvider {
                         selectedIndex = index;
                         document.querySelectorAll('.jb-tr').forEach(r => r.classList.remove('selected'));
                         tr.classList.add('selected');
-                        vscode.postMessage({ command: 'openDiff', snapshot: s.item, baseFilePath: baseFilePath });
+                        vscode.postMessage({ command: 'openDiff', snapshot: s.item, baseFilePath: baseFilePath, currentSelection: currentSelection });
                         updateDetails(s.item);
                     };
                     const timeStr = new Date(s.item.timestamp).toLocaleTimeString(undefined, {hour:'2-digit',minute:'2-digit'});

@@ -59,11 +59,16 @@ export class HistoryFilter {
                     const hunks = this.parseHunks(diff);
     
                     if (this.isRelevant(currentRange, hunks)) {
+                        // currentRange uses VS Code's exclusive-end convention: when end.character === 0
+                        // the end.line is one past the actual last line. Store inclusive end.
+                        const inclusiveEnd = (currentRange.end.character === 0 && currentRange.end.line > currentRange.start.line)
+                            ? currentRange.end.line - 1
+                            : currentRange.end.line;
                         relevantSnapshots.push({
                             ...newSnapshot,
-                            relevantRange: { start: currentRange.start.line, end: currentRange.end.line }
+                            relevantRange: { start: currentRange.start.line, end: inclusiveEnd }
                         });
-                        console.log(`[HistoryFilter] Relevant snapshot found: ${newSnapshot.id} (${newSnapshot.label || newSnapshot.eventType})`);
+                        console.log(`[HistoryFilter] Relevant snapshot found: ${newSnapshot.id} (${newSnapshot.label || newSnapshot.eventType}) range ${currentRange.start.line}-${inclusiveEnd}`);
                     }
     
                     const prevRange = currentRange;
@@ -75,12 +80,44 @@ export class HistoryFilter {
                 }
             }
     
-            // Check the oldest snapshot?
+            // Only include the oldest snapshot if the tracked range maps to valid lines within it,
+            // i.e. the selection exists in the initial version of the file. This avoids always
+            // showing a "file vs empty" diff for the very first snapshot when nothing changed there.
             const oldest = sortedHistory[sortedHistory.length - 1];
-            relevantSnapshots.push({
-                ...oldest,
-                relevantRange: { start: currentRange.start.line, end: currentRange.end.line }
-            });
+            try {
+                const oldestUri = await this.storage.getSnapshotUri(oldest, fileUri);
+                const oldestData = await (await import('fs')).promises.readFile(oldestUri.fsPath, 'utf8');
+                const oldestLines = oldestData.split('\n');
+                const rangeStart = currentRange.start.line;
+                const rangeEnd = currentRange.end.line;
+                // Only include if the range falls within the oldest snapshot's line count
+                if (rangeStart < oldestLines.length) {
+                    relevantSnapshots.push({
+                        ...oldest,
+                        relevantRange: { start: rangeStart, end: Math.min(rangeEnd, oldestLines.length - 1) }
+                    });
+                    console.log(`[HistoryFilter] Oldest snapshot included: ${oldest.id} (range ${rangeStart}-${rangeEnd})`);
+                } else {
+                    console.log(`[HistoryFilter] Oldest snapshot skipped: mapped range ${rangeStart}-${rangeEnd} is out of bounds (file has ${oldestLines.length} lines)`);
+                }
+            } catch (e) {
+                // Fallback: always include the oldest snapshot if we can't read it
+                const inclusiveEnd = (currentRange.end.character === 0 && currentRange.end.line > currentRange.start.line)
+                    ? currentRange.end.line - 1
+                    : currentRange.end.line;
+                relevantSnapshots.push({
+                    ...oldest,
+                    relevantRange: { start: currentRange.start.line, end: inclusiveEnd }
+                });
+            }
+
+            // If no relevant snapshots were found at all, return the full unfiltered history
+            // so the user isn't left with a confusing empty or single-entry list.
+            if (relevantSnapshots.length === 0) {
+                console.log(`[HistoryFilter] No relevant snapshots found, returning full history as fallback.`);
+                return history;
+            }
+
             console.log(`[HistoryFilter] Found ${relevantSnapshots.length} relevant snapshots.`);
     
             return relevantSnapshots;

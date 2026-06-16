@@ -367,7 +367,7 @@ function resolveSnapshotUri(filePath: string): vscode.Uri {
     return vscode.Uri.file(filePath);
 }
 
-async function openDiff(snapshot: Snapshot, baseFilePath: string, currentSelection?: { startLine: number, endLine: number }) {
+async function openDiff(snapshot: Snapshot, baseFilePath: string, currentSelection?: { startLine: number, endLine: number } | any) {
     await ensureStorage();
     let fileUri: vscode.Uri | undefined;
     if (baseFilePath && baseFilePath !== 'unknown' && baseFilePath !== '') {
@@ -386,7 +386,18 @@ async function openDiff(snapshot: Snapshot, baseFilePath: string, currentSelecti
         preview: true
     };
 
-    if (!snapshot.relevantRange && !currentSelection) {
+    // Normalize currentSelection: handle both { startLine, endLine } (from webview)
+    // and raw vscode.Selection serialized as { start: { line }, end: { line } } (from panel).
+    let normalizedSelection: { startLine: number, endLine: number } | undefined;
+    if (currentSelection) {
+        if (typeof currentSelection.startLine === 'number') {
+            normalizedSelection = { startLine: currentSelection.startLine, endLine: currentSelection.endLine };
+        } else if (currentSelection.start && typeof currentSelection.start.line === 'number') {
+            normalizedSelection = { startLine: currentSelection.start.line, endLine: currentSelection.end.line };
+        }
+    }
+
+    if (!snapshot.relevantRange && !normalizedSelection) {
          try {
             const snapshotUri = await storage.getSnapshotUri(snapshot, fileUri);
             const title = `${fileName} (${timestamp}) ↔ ${fileName} (Current)`;
@@ -402,17 +413,22 @@ async function openDiff(snapshot: Snapshot, baseFilePath: string, currentSelecti
         const currentData = await vscode.workspace.fs.readFile(fileUri);
         const currentContent = new TextDecoder().decode(currentData);
         const snapRange = snapshot.relevantRange;
-        const currRange = currentSelection;
+        const currRange = normalizedSelection;
 
-        if (!snapRange || !currRange) {
+        if (!snapRange && !currRange) {
              const snapshotUri = await storage.getSnapshotUri(snapshot, fileUri);
              const title = `${fileName} (${timestamp}) ↔ ${fileName} (Current)`;
              await vscode.commands.executeCommand('vscode.diff', snapshotUri, fileUri, title, diffOptions);
              return;
         }
 
-        const snapLines = snapshotContent.split('\n').slice(snapRange.start, snapRange.end + 1).join('\n');
-        const currLines = currentContent.split('\n').slice(currRange.startLine, currRange.endLine + 1).join('\n');
+        // If we have a relevantRange but no explicit currRange (e.g. fallback path),
+        // use the snapRange as an approximation for the current-file side.
+        const effectiveCurrRange = currRange ?? { startLine: snapRange!.start, endLine: snapRange!.end };
+        const effectiveSnapRange = snapRange ?? { start: currRange!.startLine, end: currRange!.endLine };
+
+        const snapLines = snapshotContent.split('\n').slice(effectiveSnapRange.start, effectiveSnapRange.end + 1).join('\n');
+        const currLines = currentContent.split('\n').slice(effectiveCurrRange.startLine, effectiveCurrRange.endLine + 1).join('\n');
         const snapTemp = await createTempFile(`v_${snapshot.id.substring(0,8)}${ext}`, snapLines);
         const currTemp = await createTempFile(`current_selection${ext}`, currLines);
         
@@ -633,13 +649,24 @@ async function showHistoryForSelection() {
     if (!editor) return;
     const uri = editor.document.uri;
     const history = await storage.getHistoryForFile(uri);
+    const sel = editor.selection;
+    const docLineCount = editor.document.lineCount;
+
+    // When the entire file is selected (Select All), skip selection-filtering
+    // and show the same result as Show History — a full-file timeline.
+    const isFullFile = sel.start.line === 0 && sel.end.line >= docLineCount - 1;
+    if (isFullFile) {
+        showHistory(uri);
+        return;
+    }
+
     try {
-        const filtered = await historyFilter.filterHistoryForSelection(history, uri, editor.selection);
+        const filtered = await historyFilter.filterHistoryForSelection(history, uri, sel);
         if (vscode.workspace.getConfiguration('chronos').get('viewMode') === 'panel') {
             panelProvider.showLocalHistory(filtered, uri.fsPath, editor.selection, aiService.isConfigured());
             vscode.commands.executeCommand('chronos.historyPanel.focus');
         } else {
-            viewProvider.show(filtered, uri, (s: Snapshot) => getDiffForSnapshot(s, uri), editor.selection, (q: string, sc: boolean) => storage.search(q, sc), (s: Snapshot) => explainSnapshot(s, uri), (q: string) => manager.semanticSearch(q), (id: string) => manager.togglePin(id), (s1: Snapshot, s2: Snapshot) => compareSnapshots(s1, s2), undefined, aiService.isConfigured());
+            viewProvider.show(filtered, uri, (s: Snapshot) => getDiffForSnapshot(s, uri), sel, (q: string, sc: boolean) => storage.search(q, sc), (s: Snapshot) => explainSnapshot(s, uri), (q: string) => manager.semanticSearch(q), (id: string) => manager.togglePin(id), (s1: Snapshot, s2: Snapshot) => compareSnapshots(s1, s2), undefined, aiService.isConfigured());
         }
     } catch (e) {}
 }
