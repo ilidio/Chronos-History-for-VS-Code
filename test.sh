@@ -53,4 +53,11 @@ if [ $? -ne 0 ]; then
     exit 1
 fi
 
+echo "🧪 Running Interop Hash Conformance Tests..."
+node test/interop_hash_tests.js
+if [ $? -ne 0 ]; then
+    echo "❌ Interop hash conformance tests failed!"
+    exit 1
+fi
+
 echo "✅ All tests passed successfully!"
