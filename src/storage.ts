@@ -385,14 +385,18 @@ export class HistoryStorage {
         await this.init();
         await this.refreshIndices();
 
+        if (!snapshot.storagePath) {
+            throw new Error(`Snapshot ${snapshot.id} has no storagePath`);
+        }
+
         for (const { index, root } of this.indices.values()) {
             if (index.snapshots.some(s => s.id === snapshot.id)) {
-                return vscode.Uri.joinPath(root, snapshot.storagePath!);
+                return vscode.Uri.joinPath(root, snapshot.storagePath);
             }
         }
 
         const { root } = await this.getStorageForFile(fileUri);
-        return vscode.Uri.joinPath(root, snapshot.storagePath!);
+        return vscode.Uri.joinPath(root, snapshot.storagePath);
     }
 
     private async saveIndex(index: HistoryIndex, indexUri: vscode.Uri) {

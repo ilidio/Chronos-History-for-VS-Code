@@ -344,8 +344,7 @@ async function createTempFile(name: string, content: string): Promise<vscode.Uri
         console.error('Failed to create temp directory:', e);
     }
     
-    // Sanitize the name to ensure it doesn't try to create subdirectories
-    const safeName = name.replace(/[\/\\]/g, '_');
+    const safeName = path.basename(name.replace(/[\/\\]/g, '_'));
     const filePath = path.join(tmpDir, safeName);
     
     try {
@@ -402,7 +401,9 @@ async function openDiff(snapshot: Snapshot, baseFilePath: string, currentSelecti
             const snapshotUri = await storage.getSnapshotUri(snapshot, fileUri);
             const title = `${fileName} (${timestamp}) ↔ ${fileName} (Current)`;
             await vscode.commands.executeCommand('vscode.diff', snapshotUri, fileUri, title, diffOptions);
-        } catch (e) {}
+        } catch (e) {
+            vscode.window.showErrorMessage('Failed to open diff: ' + e);
+        }
         return;
     }
 
@@ -434,7 +435,9 @@ async function openDiff(snapshot: Snapshot, baseFilePath: string, currentSelecti
         
         const title = `${fileName} (${timestamp}) ↔ ${fileName} (Current)`;
         await vscode.commands.executeCommand('vscode.diff', snapTemp, currTemp, title, diffOptions);
-    } catch (e) {}
+    } catch (e) {
+        vscode.window.showErrorMessage('Failed to open selection diff: ' + e);
+    }
 }
 
 async function openDiffGit(commit: GitCommit, filePath: string) {
@@ -668,7 +671,9 @@ async function showHistoryForSelection() {
         } else {
             viewProvider.show(filtered, uri, (s: Snapshot) => getDiffForSnapshot(s, uri), sel, (q: string, sc: boolean) => storage.search(q, sc), (s: Snapshot) => explainSnapshot(s, uri), (q: string) => manager.semanticSearch(q), (id: string) => manager.togglePin(id), (s1: Snapshot, s2: Snapshot) => compareSnapshots(s1, s2), undefined, aiService.isConfigured());
         }
-    } catch (e) {}
+    } catch (e) {
+        vscode.window.showErrorMessage('Failed to show selection history: ' + e);
+    }
 }
 
 async function showProjectHistory() {
@@ -739,7 +744,9 @@ async function compareToCurrent(snapshotId: string, filePath?: string) {
         const timestamp = new Date(snapshot.timestamp).toLocaleString();
         const title = `${fileName} (${timestamp}) ↔ ${fileName} (Current)`;
         await vscode.commands.executeCommand('vscode.diff', snapshotUri, fileUri, title);
-    } catch (e) {}
+    } catch (e) {
+        vscode.window.showErrorMessage('Failed to compare to current: ' + e);
+    }
 }
 
 async function compareWithActive(snapshot: Snapshot) {
@@ -802,7 +809,7 @@ async function showGitHistory() {
                 viewProvider.showGit(
                     commits, 
                     editor.document.uri.fsPath, 
-                    undefined as any,
+                    undefined,
                     (c: GitCommit) => explainGitCommit(c),
                     (h1: string, h2: string) => gitService.getCommitDiff(h1, h2, editor.document.uri.fsPath, -1, -1), // -1, -1 signals whole file
                     aiService.isConfigured()
@@ -836,7 +843,9 @@ async function gitHistoryForSelection() {
                 );
             }
         }
-    } catch (e) {}
+    } catch (e) {
+        vscode.window.showErrorMessage('Failed to show git history for selection: ' + e);
+    }
 }
 
 async function runDiagnostics() {

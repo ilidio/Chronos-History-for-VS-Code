@@ -162,6 +162,11 @@
           ],
           "description": "Glob patterns to exclude from history."
         },
+        "chronos.respectGitIgnore": {
+          "type": "boolean",
+          "default": false,
+          "description": "If enabled, Chronos will respect .gitignore rules and skip tracking files that are git-ignored."
+        },
         "chronos.saveInProjectFolder": {
           "type": "boolean",
           "default": false,
