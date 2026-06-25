@@ -200,7 +200,7 @@ export class HistoryViewProvider {
         }
     }
 
-    public showGit(commits: GitCommit[], filePath: string, selection: {startLine: number, endLine: number}, onExplain?: (c: GitCommit) => Promise<string>, onCompare?: (h1: string, h2: string) => Promise<string>, aiConfigured: boolean = false) {
+    public showGit(commits: GitCommit[], filePath: string, selection?: {startLine: number, endLine: number}, onExplain?: (c: GitCommit) => Promise<string>, onCompare?: (h1: string, h2: string) => Promise<string>, aiConfigured: boolean = false) {
         const config = vscode.workspace.getConfiguration('chronos');
         const useJetBrains = config.get('ui.useJetBrainsStyle', true);
         const enableHtmlPreview = config.get('diff.enableHtmlPreview', true);

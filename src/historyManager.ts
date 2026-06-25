@@ -326,7 +326,9 @@ export class HistoryManager {
             if (history.filter(s => s.eventType !== 'label').length === 0) {
                 await this.storage.saveSnapshot(doc, 'manual', 'Initial Baseline');
             }
-        } catch (e) {}
+        } catch (e) {
+            console.error('[HistoryManager] onOpen failed:', e);
+        }
     }
 
     private async onSave(doc: vscode.TextDocument) {
@@ -474,11 +476,26 @@ export class HistoryManager {
                 const relativePath = vscode.workspace.asRelativePath(file.newUri, false);
                 if (this.isExcluded(relativePath)) continue;
                 await this.storage.saveSnapshot(doc, 'rename');
-            } catch (err) {}
+            } catch (err) {
+                console.error('[HistoryManager] onRename failed:', err);
+            }
         }
     }
 
-    private async onDelete(e: vscode.FileDeleteEvent) {}
+    private async onDelete(e: vscode.FileDeleteEvent) {
+        for (const uri of e.files) {
+            try {
+                const relativePath = vscode.workspace.asRelativePath(uri, false);
+                if (this.isExcluded(relativePath)) continue;
+                const history = await this.storage.getHistoryForFile(uri);
+                if (history.length > 0) {
+                    await this.storage.createLabel(`Deleted: ${relativePath}`, undefined, undefined, uri);
+                }
+            } catch (err) {
+                console.error('[HistoryManager] onDelete failed:', err);
+            }
+        }
+    }
 
     public async putLabel(name: string, description?: string, document?: vscode.TextDocument, filePath?: string) {
         if (!document && filePath) {
