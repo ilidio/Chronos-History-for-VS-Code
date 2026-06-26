@@ -40,6 +40,7 @@ Module.prototype.require = function(request) {
 
 async function runMenuTests() {
     console.log('--- Starting Chronos Menu Tests ---');
+    let failures = 0;
 
     try {
         const extension = require('../out/extension');
@@ -87,6 +88,7 @@ async function runMenuTests() {
             console.log('✅ chronos.showHistory executed.');
         } else {
             console.error('❌ chronos.showHistory not registered.');
+            failures++;
         }
 
         // --- Test 2: Show History for Selection ---
@@ -97,6 +99,7 @@ async function runMenuTests() {
             console.log('✅ chronos.showHistoryForSelection executed.');
         } else {
             console.error('❌ chronos.showHistoryForSelection not registered.');
+            failures++;
         }
 
         // --- Test 3: Git History for Selection ---
@@ -109,6 +112,7 @@ async function runMenuTests() {
             console.log('✅ chronos.gitHistoryForSelection executed.');
         } else {
             console.error('❌ chronos.gitHistoryForSelection not registered.');
+            failures++;
         }
 
         // --- Test 4: Show Project History ---
@@ -119,6 +123,7 @@ async function runMenuTests() {
             console.log('✅ chronos.showProjectHistory executed.');
         } else {
             console.error('❌ chronos.showProjectHistory not registered.');
+            failures++;
         }
 
         // --- Test 5: Show Recent Changes ---
@@ -129,6 +134,7 @@ async function runMenuTests() {
             console.log('✅ chronos.showRecentChanges executed.');
         } else {
             console.error('❌ chronos.showRecentChanges not registered.');
+            failures++;
         }
 
         // --- Test 6: Put Label ---
@@ -136,23 +142,39 @@ async function runMenuTests() {
         const putLabelCmd = commandsMap.get('chronos.putLabel');
         if (putLabelCmd) {
             await putLabelCmd();
-            // Check if label snapshot was created in index
-            const rawIndex = await mockVscode.workspace.fs.readFile(indexUri);
-            const savedIndex = JSON.parse(new TextDecoder().decode(rawIndex));
-            const labelSnap = savedIndex.snapshots.find(s => s.eventType === 'label');
-            
-            if (labelSnap && labelSnap.label === 'MockInput') {
+            // The label snapshot is saved into the file's per-project storage folder
+            // (`{name}-{hash}/index.json`), not the global root. Scan all index files
+            // in the mock FS so the assertion stays valid regardless of the folder scheme.
+            let labelSnap;
+            for (const [key, value] of fsStore.entries()) {
+                if (!key.endsWith('index.json')) continue;
+                try {
+                    const idx = JSON.parse(new TextDecoder().decode(value));
+                    const found = (idx.snapshots || []).find(s => s.eventType === 'label' && s.label === 'MockInput');
+                    if (found) { labelSnap = found; break; }
+                } catch (e) { /* ignore non-JSON / partial writes */ }
+            }
+
+            if (labelSnap) {
                 console.log('✅ chronos.putLabel executed and label saved.');
             } else {
                 console.error('❌ chronos.putLabel failed to save label.');
+                failures++;
             }
         } else {
             console.error('❌ chronos.putLabel not registered.');
+            failures++;
         }
 
     } catch (e) {
         console.error('Test Suite Failed:', e);
         console.error(e.stack);
+        failures++;
+    }
+
+    if (failures > 0) {
+        console.error(`\n❌ Menu tests failed (${failures} failure(s)).`);
+        process.exit(1);
     }
 }
 
