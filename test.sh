@@ -60,4 +60,11 @@ if [ $? -ne 0 ]; then
     exit 1
 fi
 
+echo "🧪 Running History-Loss Regression Tests..."
+node test/data_loss_tests.js
+if [ $? -ne 0 ]; then
+    echo "❌ History-loss regression tests failed!"
+    exit 1
+fi
+
 echo "✅ All tests passed successfully!"

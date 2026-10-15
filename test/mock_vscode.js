@@ -76,6 +76,7 @@ const mockVscode = {
         }),
         showInformationMessage: (msg) => console.log('Info:', msg),
         showErrorMessage: (msg) => console.error('Error:', msg),
+        showWarningMessage: (msg) => console.warn('Warning:', msg),
         showInputBox: async (opts) => { console.log('InputBox:', opts.prompt); return 'MockInput'; },
         registerTreeDataProvider: () => {},
         registerWebviewViewProvider: () => {},
@@ -113,6 +114,14 @@ const mockVscode = {
                     throw error;
                 }
                 return data;
+            },
+            delete: async (uri, options) => {
+                if (!fsStore.has(uri.toString())) {
+                    const error = new Error('File not found');
+                    error.code = 'FileNotFound'; // Mimic vscode.FileSystemError
+                    throw error;
+                }
+                fsStore.delete(uri.toString());
             },
             stat: async (uri) => {
                 if (!fsStore.has(uri.toString())) {
