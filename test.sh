@@ -60,10 +60,24 @@ if [ $? -ne 0 ]; then
     exit 1
 fi
 
+echo "🧪 Running Selection History Tests..."
+node test/selection_history_tests.js
+if [ $? -ne 0 ]; then
+    echo "❌ Selection History tests failed!"
+    exit 1
+fi
+
 echo "🧪 Running Context Resolver Tests..."
 node test/context_resolver_tests.js
 if [ $? -ne 0 ]; then
     echo "❌ Context Resolver tests failed!"
+    exit 1
+fi
+
+echo "🧪 Running Content Anchor Tests..."
+node test/content_anchor_tests.js
+if [ $? -ne 0 ]; then
+    echo "❌ Content Anchor tests failed!"
     exit 1
 fi
 

@@ -1,3 +1,5 @@
+export type RangeAnchoring = 'position' | 'content' | 'origin';
+
 export interface Snapshot {
     id: string;
     timestamp: number;
@@ -7,6 +9,9 @@ export interface Snapshot {
     label?: string;
     description?: string;
     relevantRange?: { start: number; end: number };
+    /** How relevantRange was obtained: by diff arithmetic, by re-finding the
+     *  block's content, or because the block first appears in this snapshot. */
+    rangeAnchoring?: RangeAnchoring;
     linesAdded?: number;
     linesDeleted?: number;
     pinned?: boolean;

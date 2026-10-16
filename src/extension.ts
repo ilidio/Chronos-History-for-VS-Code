@@ -4,7 +4,7 @@ import * as os from 'os';
 import * as fs from 'fs';
 import { HistoryStorage } from './storage';
 import { HistoryManager } from './historyManager';
-import { HistoryFilter } from './historyFilter';
+import { HistoryFilter, RangeAnchor } from './historyFilter';
 import { HistoryViewProvider } from './views/historyWebview';
 import { HistoryPanelProvider } from './views/historyPanelProvider';
 import { GraphViewProvider } from './views/graphWebview';
@@ -19,6 +19,7 @@ import { BackupService } from './backup';
 import { ProjectRestorer } from './timeTravel';
 import { Snapshot, GitCommit } from './types';
 import { resolveContextForEditor, ResolvedContext } from './utils/contextResolver';
+import { LineRange, mapRangeBackwards, parseHunks } from './utils/rangeMapper';
 
 let storage: HistoryStorage;
 let manager: HistoryManager;
@@ -660,14 +661,14 @@ async function showHistoryForContext() {
     if (!editor) return;
     const context = await resolveContextForEditor(editor);
     announceContext(context);
-    await showLocalHistoryForRange(editor, context.range);
+    await showLocalHistoryForRange(editor, context.range, { signatureLine: context.anchor.signatureLine });
 }
 
 /**
  * Shared path for "History for Selection" and "History for Context": both end
  * up filtering the local timeline down to a line range.
  */
-async function showLocalHistoryForRange(editor: vscode.TextEditor, range: vscode.Range) {
+async function showLocalHistoryForRange(editor: vscode.TextEditor, range: vscode.Range, anchor?: RangeAnchor) {
     await ensureStorage();
     const uri = editor.document.uri;
     const history = await storage.getHistoryForFile(uri);
@@ -683,7 +684,17 @@ async function showLocalHistoryForRange(editor: vscode.TextEditor, range: vscode
     }
 
     try {
-        const filtered = await historyFilter.filterHistoryForSelection(history, uri, range);
+        const filtered = await historyFilter.filterHistoryForSelection(history, uri, range, anchor);
+        if (filtered.length === 0) {
+            // Say so, instead of quietly widening back to the whole file.
+            const lines = `lines ${range.start.line + 1}-${inclusiveEndLine(range) + 1}`;
+            const choice = await vscode.window.showInformationMessage(
+                `Chronos: no snapshot out of ${history.length} changed ${lines}.`,
+                'Show Full History'
+            );
+            if (choice === 'Show Full History') showHistory(uri);
+            return;
+        }
         if (vscode.workspace.getConfiguration('chronos').get('viewMode') === 'panel') {
             panelProvider.showLocalHistory(filtered, uri.fsPath, range, aiService.isConfigured());
             vscode.commands.executeCommand('chronos.historyPanel.focus');
@@ -693,6 +704,12 @@ async function showLocalHistoryForRange(editor: vscode.TextEditor, range: vscode
     } catch (e) {
         vscode.window.showErrorMessage('Failed to show selection history: ' + e);
     }
+}
+
+/** Last line a range actually covers, accounting for VS Code's exclusive end. */
+function inclusiveEndLine(range: vscode.Range): number {
+    if (range.end.character === 0 && range.end.line > range.start.line) return range.end.line - 1;
+    return range.end.line;
 }
 
 /** Tells the user which block the history was resolved to, and how. */
@@ -871,11 +888,13 @@ async function gitHistoryForContext() {
  */
 async function showGitHistoryForRange(editor: vscode.TextEditor, startLine: number, endLine: number) {
     const filePath = editor.document.uri.fsPath;
-    const range = { startLine, endLine };
+    // Line numbers from the editor describe the buffer, but `git log -L` resolves
+    // them against HEAD, so uncommitted edits above the range would shift it.
+    const range = await mapRangeToHead(filePath, { startLine, endLine });
     try {
-        const commits = await gitService.getHistoryForSelection(filePath, startLine, endLine, { maxCommits: 100, followRenames: true, dateFormat: 'yyyy-MM-dd HH:mm' });
+        const commits = await gitService.getHistoryForSelection(filePath, range.startLine, range.endLine, { maxCommits: 100, followRenames: true, dateFormat: 'yyyy-MM-dd HH:mm' });
         if (commits.length === 0) {
-            vscode.window.setStatusBarMessage(`$(history) Chronos: no git history for lines ${startLine + 1}-${endLine + 1}`, 5000);
+            vscode.window.setStatusBarMessage(`$(history) Chronos: no git history for lines ${range.startLine + 1}-${range.endLine + 1}`, 5000);
             return;
         }
         if (vscode.workspace.getConfiguration('chronos').get('viewMode') === 'panel') {
@@ -887,12 +906,29 @@ async function showGitHistoryForRange(editor: vscode.TextEditor, startLine: numb
                 filePath, 
                 range,
                 (c: GitCommit) => explainGitCommit(c),
-                (h1: string, h2: string) => gitService.getCommitDiff(h1, h2, filePath, startLine, endLine),
+                (h1: string, h2: string) => gitService.getCommitDiff(h1, h2, filePath, range.startLine, range.endLine),
                 aiService.isConfigured()
             );
         }
     } catch (e) {
         vscode.window.showErrorMessage('Failed to show git history for selection: ' + e);
+    }
+}
+
+/**
+ * Translates a range taken from the editor buffer into HEAD's line numbers by
+ * mapping it back through the uncommitted changes.
+ */
+async function mapRangeToHead(filePath: string, range: LineRange): Promise<LineRange> {
+    try {
+        const hunks = parseHunks(await gitService.getUncommittedHunks(filePath));
+        if (hunks.length === 0) return range;
+        const mapped = mapRangeBackwards(range, hunks);
+        console.log(`[Chronos] Mapped buffer range ${range.startLine}-${range.endLine} onto HEAD as ${mapped.startLine}-${mapped.endLine}`);
+        return mapped;
+    } catch (e) {
+        console.warn('[Chronos] Could not map the range onto HEAD:', e);
+        return range;
     }
 }
 

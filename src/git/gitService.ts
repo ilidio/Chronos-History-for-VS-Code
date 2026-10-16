@@ -241,6 +241,79 @@ export class GitService {
         });
     }
 
+    /**
+     * Hunk headers only (-U0) for two files on disk.
+     *
+     * Range tracking needs nothing but the @@ headers, so it must not pay for
+     * the full file context that getDiff produces for display.
+     */
+    async getHunks(file1: string, file2: string): Promise<string> {
+        const args = ['-c', 'color.ui=false', 'diff', '--unified=0', '--no-index', file1, file2];
+
+        return new Promise((resolve) => {
+            const git = cp.spawn('git', args, { env: process.env });
+            let stdout = '';
+            let stderr = '';
+
+            git.stdout.on('data', data => stdout += data);
+            git.stderr.on('data', data => stderr += data);
+
+            git.on('error', err => {
+                console.warn('Git diff (hunks) failed to start:', err);
+                resolve('');
+            });
+
+            git.on('close', code => {
+                // --no-index returns 1 when the files differ, >1 on error.
+                if (code !== null && code > 1) {
+                    console.warn('Git diff (hunks) failed:', stderr);
+                    resolve('');
+                    return;
+                }
+                resolve(stdout);
+            });
+        });
+    }
+
+    /**
+     * Hunk headers (-U0) between HEAD and the working tree for one file.
+     *
+     * Line numbers taken from the editor describe the buffer, but `git log -L`
+     * resolves them against HEAD. These hunks let a caller translate between
+     * the two.
+     */
+    async getUncommittedHunks(filePath: string): Promise<string> {
+        const workspaceFolder = vscode.workspace.getWorkspaceFolder(vscode.Uri.file(filePath));
+        if (!workspaceFolder) return '';
+
+        const canonicalPath = await this.getCanonicalPath(filePath);
+        const args = ['-c', 'color.ui=false', 'diff', '--unified=0', 'HEAD', '--', canonicalPath];
+
+        return new Promise((resolve) => {
+            const git = cp.spawn('git', args, { cwd: workspaceFolder.uri.fsPath, env: process.env });
+            let stdout = '';
+            let stderr = '';
+
+            git.stdout.on('data', data => stdout += data);
+            git.stderr.on('data', data => stderr += data);
+
+            git.on('error', err => {
+                console.warn('Git diff HEAD failed to start:', err);
+                resolve('');
+            });
+
+            git.on('close', code => {
+                if (code !== 0) {
+                    // No HEAD yet, or the file is untracked: nothing to map.
+                    console.warn('Git diff HEAD failed:', stderr);
+                    resolve('');
+                    return;
+                }
+                resolve(stdout);
+            });
+        });
+    }
+
     async getDiff(file1: string, file2: string): Promise<string> {
         // git diff --no-index <file1> <file2>
         const args = ['-c', 'color.ui=false', 'diff', '--unified=999999', '--no-index', file1, file2];

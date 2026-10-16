@@ -418,6 +418,12 @@ export class HistoryPanelProvider implements vscode.WebviewViewProvider {
                     if (currentMode === 'local') {
                         const t = new Date(obj.item.timestamp).toLocaleTimeString();
                         tr.innerHTML = '<td class="jb-td">' + escapeHtml(t) + '</td><td class="jb-td">' + escapeHtml(obj.item.eventType) + '</td><td class="jb-td">' + escapeHtml(obj.item.label || obj.item.filePath.split(/[\\\\/]/).pop()) + '</td>';
+                        if (obj.item.relevantRange) {
+                            const how = obj.item.rangeAnchoring === 'content' ? 'block re-found by content'
+                                : obj.item.rangeAnchoring === 'origin' ? 'earliest version of the block we hold'
+                                : 'tracked by position';
+                            tr.title = 'Lines ' + (obj.item.relevantRange.start + 1) + '-' + (obj.item.relevantRange.end + 1) + ' — ' + how;
+                        }
                     } else {
                         tr.innerHTML = '<td class="jb-td" style="font-family: monospace;">' + escapeHtml(obj.item.hash ? obj.item.hash.substring(0,7) : "---") + '</td><td class="jb-td">' + escapeHtml(obj.item.date) + '</td><td class="jb-td">' + escapeHtml(obj.item.author) + '</td><td class="jb-td">' + escapeHtml(obj.item.message) + '</td>';
                     }

@@ -244,14 +244,18 @@ function makeContext(
         : lines.length;
     const lastLine = Math.max(0, count - 1);
 
-    const start = Math.max(0, Math.min(startLine, lastLine));
+    let start = Math.max(0, Math.min(startLine, lastLine));
     let end = Math.max(start, Math.min(endLine, lastLine));
 
-    // Trailing blank lines are not part of the block, and an empty end line
-    // would make the range end at character 0 — which downstream filters read
-    // as an exclusive end.
+    // Blank lines at either edge are not part of the block. Trimming the end
+    // also keeps the range from ending at character 0, which downstream filters
+    // read as an exclusive end; trimming the start keeps the block's first line
+    // equal to its signature line, which is what anchors it in older versions.
     while (end > start && (lines[end] ?? '').trim().length === 0) {
         end--;
+    }
+    while (start < end && (lines[start] ?? '').trim().length === 0) {
+        start++;
     }
 
     const endCharacter = (lines[end] ?? '').length;
