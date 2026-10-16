@@ -1,3 +1,5 @@
+export type RangeAnchoring = 'position' | 'content' | 'origin';
+
 export interface Snapshot {
     id: string;
     timestamp: number;
@@ -7,6 +9,9 @@ export interface Snapshot {
     label?: string;
     description?: string;
     relevantRange?: { start: number; end: number };
+    /** How relevantRange was obtained: by diff arithmetic, by re-finding the
+     *  block's content, or because the block first appears in this snapshot. */
+    rangeAnchoring?: RangeAnchoring;
     linesAdded?: number;
     linesDeleted?: number;
     pinned?: boolean;
@@ -48,6 +53,29 @@ export interface GitHistoryConfig {
     maxCommits: number;
     followRenames: boolean;
     dateFormat: string;
+}
+
+export type GitRangeFailureReason =
+    | 'not-tracked'
+    | 'no-commits'
+    | 'bad-range'
+    | 'no-repo'
+    | 'git-missing'
+    | 'unknown';
+
+/** Why git could not answer, as opposed to there being no history. */
+export interface GitRangeFailure {
+    reason: GitRangeFailureReason;
+    /** One sentence for the user. */
+    message: string;
+    /** Raw stderr, for the log. */
+    detail: string;
+}
+
+export interface GitRangeHistory {
+    commits: GitCommit[];
+    /** Set when git itself failed. Absent means the answer is trustworthy. */
+    failure?: GitRangeFailure;
 }
 
 export interface GitCommit {

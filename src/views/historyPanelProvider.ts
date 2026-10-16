@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import { Snapshot, GitCommit } from '../types';
+import { withAnchoringLabels } from '../utils/rangeLabel';
 
 export class HistoryPanelProvider implements vscode.WebviewViewProvider {
     public static readonly viewType = 'chronos.historyPanel';
@@ -119,7 +120,7 @@ export class HistoryPanelProvider implements vscode.WebviewViewProvider {
         const config = vscode.workspace.getConfiguration('chronos');
         const enableHtmlPreview = config.get('diff.enableHtmlPreview', true);
         const defaultAction = config.get('diff.defaultAction', 'openDiff');
-        this._pendingData = { command: 'loadLocal', snapshots, filePath, selection, aiConfigured, enableHtmlPreview, defaultAction };
+        this._pendingData = { command: 'loadLocal', snapshots: withAnchoringLabels(snapshots), filePath, selection, aiConfigured, enableHtmlPreview, defaultAction };
         if (this._view) {
             this._view.show?.(true); 
             this._view.webview.postMessage(this._pendingData);
@@ -418,6 +419,7 @@ export class HistoryPanelProvider implements vscode.WebviewViewProvider {
                     if (currentMode === 'local') {
                         const t = new Date(obj.item.timestamp).toLocaleTimeString();
                         tr.innerHTML = '<td class="jb-td">' + escapeHtml(t) + '</td><td class="jb-td">' + escapeHtml(obj.item.eventType) + '</td><td class="jb-td">' + escapeHtml(obj.item.label || obj.item.filePath.split(/[\\\\/]/).pop()) + '</td>';
+                        if (obj.item.anchoringLabel) tr.title = obj.item.anchoringLabel;
                     } else {
                         tr.innerHTML = '<td class="jb-td" style="font-family: monospace;">' + escapeHtml(obj.item.hash ? obj.item.hash.substring(0,7) : "---") + '</td><td class="jb-td">' + escapeHtml(obj.item.date) + '</td><td class="jb-td">' + escapeHtml(obj.item.author) + '</td><td class="jb-td">' + escapeHtml(obj.item.message) + '</td>';
                     }

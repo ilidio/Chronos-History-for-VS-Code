@@ -14,9 +14,11 @@ Access all features via the context menu (right-click) in your editor or explore
 Chronos History
  ├─ Show History              (File-specific timeline)
  ├─ Show History for Selection (History for selected lines)
+ ├─ Show History for Context   (History for the enclosing function/class)
  ├───────────────────────────
  ├─ Show Git History          (Git commits for current file)
  ├─ Git History for Selection  (Git commits for selected lines)
+ ├─ Git History for Context    (Git commits for the enclosing function/class)
  ├───────────────────────────
  ├─ Show Project History      (Global timeline of all changes)
  ├─ Show History Graph        (Interactive visualization)
@@ -89,8 +91,9 @@ This opens a timeline of every automatic snapshot taken for the **currently acti
 #### 2. Show History for Selection (Chronos History)
 **A local "Time Machine" for your uncommitted work.**
 This is unique to the Chronos extension. It tracks changes locally on your machine, completely independent of Git.
-*   **How it works:** It filters your local Chronos snapshots to find only those where the selected lines were modified.
+*   **How it works:** It filters your local Chronos snapshots to find only those where the selected lines were modified. The range is followed backwards through each snapshot's diff and, in Context mode, checked against the block's signature line — so a function that was moved or that drifted as the lines above it changed is found again where it actually is. When the block does not exist that far back, the trail stops at the snapshot where it first appears, and when no snapshot touched those lines Chronos says so instead of quietly showing the whole file's history.
 *   **Side-by-Side View:** By default, clicking a snapshot opens VS Code's native side-by-side diff editor, scoped specifically to the selected lines.
+*   **🎯 Show History for Context:** The same thing without selecting anything first — just put the cursor inside a function, a method or a class and Chronos resolves the enclosing block for you. It asks VS Code's own language providers for the block, so it works in every language you have an extension for (TypeScript, Python, Rust, Go, Java, C#, PHP…), and falls back to code folding when a language has no symbol provider. If you do have a selection that spans several functions, it widens to the smallest block that contains all of it. The resolved block is shown in the status bar, e.g. `Chronos: history for Method MyClass.render (lines 120-168)`.
 
 #### 3. Git History for Selection
 **The direct equivalent to JetBrains' "Show History for Selection".**
@@ -98,6 +101,10 @@ This feature integrates deeply with Git to track the evolution of specific lines
 *   **How it works:** It runs a `git log -L` command on the selected lines.
 *   **Diff View:** Select any commit to see exactly how those lines changed in that specific version (vs. its parent).
 *   **📝 Compare with Current:** A dedicated button to compare a specific commit's version of the lines with your current work-in-progress.
+*   **🎯 Git History for Context:** The same `git log -L`, but on the enclosing function or class resolved from your cursor instead of a manual selection.
+*   **Line numbers vs. HEAD:** `git log -L` resolves line numbers against the last commit, so Chronos first maps your editor's lines through the uncommitted diff. Edits above the block no longer shift the result.
+*   **When `-L` cannot follow:** if the block is too new, or the file moved in a way Git cannot trace, Chronos searches the file's history for the block's name instead (`git log -S`, then the broader `-G`) and tells you the result came from a name search rather than from line tracking.
+*   **When Git cannot answer:** a file that is not committed yet, a repository with no commits, or a range that does not exist in the committed version are each reported for what they are, instead of looking like "no history".
 
 #### 4. Show Project History (with Deep Search)
 **The Global Activity Feed.**

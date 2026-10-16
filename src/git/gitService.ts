@@ -1,7 +1,31 @@
 import * as cp from 'child_process';
 import * as vscode from 'vscode';
 import * as path from 'path';
-import { GitCommit, GitHistoryConfig } from '../types';
+import { GitCommit, GitHistoryConfig, GitRangeFailure, GitRangeHistory } from '../types';
+
+/**
+ * Turns git's stderr into something that can be shown to the user. The strings
+ * matched here are git's own fatal messages, which is the only signal it gives
+ * for these cases.
+ */
+export function classifyGitRangeFailure(stderr: string, fileName: string): GitRangeFailure {
+    const detail = (stderr || '').trim();
+
+    if (/does not have any commits yet/i.test(detail)) {
+        return { reason: 'no-commits', message: 'This repository has no commits yet, so there is no line history to show.', detail };
+    }
+    if (/there is no path|no such path|exists on disk, but not in/i.test(detail)) {
+        return { reason: 'not-tracked', message: `${fileName} is not committed yet, so Git has no history for these lines.`, detail };
+    }
+    if (/has only \d+ lines/i.test(detail)) {
+        return { reason: 'bad-range', message: `Those lines do not exist in the committed version of ${fileName}.`, detail };
+    }
+    if (/not a git repository/i.test(detail)) {
+        return { reason: 'no-repo', message: `${fileName} is not inside a Git repository.`, detail };
+    }
+
+    return { reason: 'unknown', message: `Git could not read the line history for ${fileName}.`, detail };
+}
 
 export class GitService {
     
@@ -124,7 +148,7 @@ export class GitService {
         });
     }
 
-    async getHistoryForSelection(filePath: string, startLine: number, endLine: number, config: GitHistoryConfig): Promise<GitCommit[]> {
+    async getHistoryForSelection(filePath: string, startLine: number, endLine: number, config: GitHistoryConfig): Promise<GitRangeHistory> {
         const workspaceFolder = vscode.workspace.getWorkspaceFolder(vscode.Uri.file(filePath));
         if (!workspaceFolder) {
             throw new Error('File not in workspace');
@@ -134,13 +158,14 @@ export class GitService {
         // Note: git -L uses 1-based line numbers.
         const range = `${startLine + 1},${endLine + 1}`;
         const canonicalPath = await this.getCanonicalPath(filePath);
+        const limit = Math.max(1, config.maxCommits);
 
-        const args = ['-c', 'color.ui=false', 'log', `-L${range}:${canonicalPath}`];
-        
-        // Since we are parsing manually, we can't easily limit commits via git args for -L
-        // (git log -L doesn't always play nice with -n). We will limit during parsing.
+        // -L does honour -n, so the walk stops at the limit instead of producing
+        // history we would only throw away while parsing.
+        const args = ['-c', 'color.ui=false', 'log', `-n${limit}`, `-L${range}:${canonicalPath}`];
+        const fileName = path.basename(filePath);
 
-        return new Promise((resolve, reject) => {
+        return new Promise((resolve) => {
             const git = cp.spawn('git', args, { cwd: workspaceFolder.uri.fsPath, env: process.env });
             let stdout = '';
             let stderr = '';
@@ -150,17 +175,26 @@ export class GitService {
 
             git.on('error', err => {
                 console.warn('Git log failed to start:', err);
-                resolve([]);
+                resolve({
+                    commits: [],
+                    failure: {
+                        reason: 'git-missing',
+                        message: 'Git could not be started. Is it installed and on your PATH?',
+                        detail: String(err)
+                    }
+                });
             });
 
             git.on('close', code => {
                 if (code !== 0) {
-                    // git log -L can fail if lines are not tracked or file is new.
-                    console.warn('Git log -L failed:', stderr);
-                    resolve([]); 
+                    // Distinguish "git could not answer" from "there is no history
+                    // here": the two look identical to the caller otherwise.
+                    const failure = classifyGitRangeFailure(stderr, fileName);
+                    console.warn(`Git log -L failed (${failure.reason}):`, stderr);
+                    resolve({ commits: [], failure });
                     return;
                 }
-                resolve(this.parseGitLogL(stdout, config.maxCommits));
+                resolve({ commits: this.parseGitLogL(stdout, limit) });
             });
         });
     }
@@ -212,14 +246,10 @@ export class GitService {
 
         const canonicalPath = await this.getCanonicalPath(filePath);
         // -G looks for patches that match the regex. -p shows the patch.
-        const args = ['-c', 'color.ui=false', 'log', '-p', `-G${pattern}`, '--', canonicalPath];
-        
-        return new Promise((resolve) => {
-            const git = cp.spawn('git', args, { cwd: workspaceFolder.uri.fsPath, env: process.env });
-            let stdout = '';
-            git.stdout.on('data', data => stdout += data);
-            git.on('close', () => resolve(this.parseGitLogL(stdout, config.maxCommits)));
-        });
+        const limit = Math.max(1, config.maxCommits);
+        const args = ['-c', 'color.ui=false', 'log', '-p', `-n${limit}`, `-G${pattern}`, '--', canonicalPath];
+
+        return this.runLogSearch(args, workspaceFolder.uri.fsPath, limit, '-G');
     }
 
     /**
@@ -231,13 +261,114 @@ export class GitService {
         if (!workspaceFolder) return [];
 
         const canonicalPath = await this.getCanonicalPath(filePath);
-        const args = ['-c', 'color.ui=false', 'log', '-p', `-S${symbol}`, '--', canonicalPath];
-        
+        const limit = Math.max(1, config.maxCommits);
+        const args = ['-c', 'color.ui=false', 'log', '-p', `-n${limit}`, `-S${symbol}`, '--', canonicalPath];
+
+        return this.runLogSearch(args, workspaceFolder.uri.fsPath, limit, '-S');
+    }
+
+    /**
+     * Runs a `git log` search and parses it. A failure here is not worth a
+     * message of its own: these searches are fallbacks, so an empty result is
+     * the right answer for the caller.
+     */
+    private runLogSearch(args: string[], cwd: string, limit: number, label: string): Promise<GitCommit[]> {
+        return new Promise((resolve) => {
+            const git = cp.spawn('git', args, { cwd, env: process.env });
+            let stdout = '';
+            let stderr = '';
+
+            git.stdout.on('data', data => stdout += data);
+            git.stderr.on('data', data => stderr += data);
+
+            // Without this listener a failure to spawn git throws instead of
+            // resolving.
+            git.on('error', err => {
+                console.warn(`Git log ${label} failed to start:`, err);
+                resolve([]);
+            });
+
+            git.on('close', code => {
+                if (code !== 0) {
+                    console.warn(`Git log ${label} failed:`, stderr);
+                    resolve([]);
+                    return;
+                }
+                resolve(this.parseGitLogL(stdout, limit));
+            });
+        });
+    }
+
+    /**
+     * Hunk headers only (-U0) for two files on disk.
+     *
+     * Range tracking needs nothing but the @@ headers, so it must not pay for
+     * the full file context that getDiff produces for display.
+     */
+    async getHunks(file1: string, file2: string): Promise<string> {
+        const args = ['-c', 'color.ui=false', 'diff', '--unified=0', '--no-index', file1, file2];
+
+        return new Promise((resolve) => {
+            const git = cp.spawn('git', args, { env: process.env });
+            let stdout = '';
+            let stderr = '';
+
+            git.stdout.on('data', data => stdout += data);
+            git.stderr.on('data', data => stderr += data);
+
+            git.on('error', err => {
+                console.warn('Git diff (hunks) failed to start:', err);
+                resolve('');
+            });
+
+            git.on('close', code => {
+                // --no-index returns 1 when the files differ, >1 on error.
+                if (code !== null && code > 1) {
+                    console.warn('Git diff (hunks) failed:', stderr);
+                    resolve('');
+                    return;
+                }
+                resolve(stdout);
+            });
+        });
+    }
+
+    /**
+     * Hunk headers (-U0) between HEAD and the working tree for one file.
+     *
+     * Line numbers taken from the editor describe the buffer, but `git log -L`
+     * resolves them against HEAD. These hunks let a caller translate between
+     * the two.
+     */
+    async getUncommittedHunks(filePath: string): Promise<string> {
+        const workspaceFolder = vscode.workspace.getWorkspaceFolder(vscode.Uri.file(filePath));
+        if (!workspaceFolder) return '';
+
+        const canonicalPath = await this.getCanonicalPath(filePath);
+        const args = ['-c', 'color.ui=false', 'diff', '--unified=0', 'HEAD', '--', canonicalPath];
+
         return new Promise((resolve) => {
             const git = cp.spawn('git', args, { cwd: workspaceFolder.uri.fsPath, env: process.env });
             let stdout = '';
+            let stderr = '';
+
             git.stdout.on('data', data => stdout += data);
-            git.on('close', () => resolve(this.parseGitLogL(stdout, config.maxCommits)));
+            git.stderr.on('data', data => stderr += data);
+
+            git.on('error', err => {
+                console.warn('Git diff HEAD failed to start:', err);
+                resolve('');
+            });
+
+            git.on('close', code => {
+                if (code !== 0) {
+                    // No HEAD yet, or the file is untracked: nothing to map.
+                    console.warn('Git diff HEAD failed:', stderr);
+                    resolve('');
+                    return;
+                }
+                resolve(stdout);
+            });
         });
     }
 
@@ -426,7 +557,7 @@ export class GitService {
                 }
             }
         }
-        if (currentCommit) {
+        if (currentCommit && commits.length < maxCommits) {
             commits.push(currentCommit);
         }
         

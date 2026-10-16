@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import { Snapshot, GitCommit } from '../types';
+import { withAnchoringLabels } from '../utils/rangeLabel';
 
 export class HistoryViewProvider {
     public static readonly viewType = 'chronos.historyView';
@@ -127,7 +128,7 @@ export class HistoryViewProvider {
             switch (message.command) {
                 case 'ready':
                     panel.webview.postMessage({ command: 'readyConfig', htmlLayout, htmlPosition, isSyncScroll, defaultAction });
-                    panel.webview.postMessage({ command: 'loadHistory', snapshots, selection: selection ? { startLine: selection.start.line, endLine: selection.end.line } : null, filePath: currentFileUri ? currentFileUri.fsPath : '', explainEnabled: !!onExplain, aiConfigured, enableHtmlPreview, defaultAction });
+                    panel.webview.postMessage({ command: 'loadHistory', snapshots: withAnchoringLabels(snapshots), selection: selection ? { startLine: selection.start.line, endLine: selection.end.line } : null, filePath: currentFileUri ? currentFileUri.fsPath : '', explainEnabled: !!onExplain, aiConfigured, enableHtmlPreview, defaultAction });
                     return;
                 case 'openDiff': 
                     if (enableHtmlPreview && getDiff && message.action !== 'openNative') {
@@ -196,7 +197,7 @@ export class HistoryViewProvider {
 
     public updateSnapshots(snapshots: any[]) {
         if (this._panel) {
-            this._panel.webview.postMessage({ command: 'loadHistory', snapshots });
+            this._panel.webview.postMessage({ command: 'loadHistory', snapshots: withAnchoringLabels(snapshots) });
         }
     }
 
@@ -510,6 +511,7 @@ export class HistoryViewProvider {
                     const timeStr = new Date(s.timestamp).toLocaleTimeString(undefined, {hour:'2-digit',minute:'2-digit'});
                     const labelStr = s.label || s.filePath.split(new RegExp('[\\\\\\\\/]', 'g')).pop();
                     div.innerHTML = '<div class="header"><span class="event-type">' + escapeHtml(s.eventType) + '</span><span>' + timeStr + '</span></div><div>' + escapeHtml(labelStr) + '</div>';
+                    if (s.anchoringLabel) div.title = s.anchoringLabel;
                     return div;
                 }
             function updateDetails(s) {
