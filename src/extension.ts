@@ -17,7 +17,7 @@ import { GitIgnoreService } from './git/gitIgnoreService';
 import { AIService } from './ai/aiService';
 import { BackupService } from './backup';
 import { ProjectRestorer } from './timeTravel';
-import { Snapshot, GitCommit } from './types';
+import { Snapshot, GitCommit, GitHistoryConfig } from './types';
 import { resolveContextForEditor, ResolvedContext } from './utils/contextResolver';
 import { LineRange, mapRangeBackwards, parseHunks } from './utils/rangeMapper';
 
@@ -879,40 +879,89 @@ async function gitHistoryForContext() {
     if (!editor) return;
     const context = await resolveContextForEditor(editor);
     announceContext(context);
-    await showGitHistoryForRange(editor, context.startLine, context.endLine);
+    await showGitHistoryForRange(editor, context.startLine, context.endLine, context.anchor.namePath);
 }
+
+const GIT_HISTORY_CONFIG: GitHistoryConfig = { maxCommits: 100, followRenames: true, dateFormat: 'yyyy-MM-dd HH:mm' };
 
 /**
  * Shared path for "Git History for Selection" and "Git History for Context":
  * both resolve to a line range handed to `git log -L`.
  */
-async function showGitHistoryForRange(editor: vscode.TextEditor, startLine: number, endLine: number) {
+async function showGitHistoryForRange(editor: vscode.TextEditor, startLine: number, endLine: number, namePath?: string) {
     const filePath = editor.document.uri.fsPath;
     // Line numbers from the editor describe the buffer, but `git log -L` resolves
     // them against HEAD, so uncommitted edits above the range would shift it.
     const range = await mapRangeToHead(filePath, { startLine, endLine });
     try {
-        const commits = await gitService.getHistoryForSelection(filePath, range.startLine, range.endLine, { maxCommits: 100, followRenames: true, dateFormat: 'yyyy-MM-dd HH:mm' });
-        if (commits.length === 0) {
-            vscode.window.setStatusBarMessage(`$(history) Chronos: no git history for lines ${range.startLine + 1}-${range.endLine + 1}`, 5000);
+        const history = await gitService.getHistoryForSelection(filePath, range.startLine, range.endLine, GIT_HISTORY_CONFIG);
+
+        if (history.failure) {
+            // Git could not answer. Saying "no history" here would be a lie.
+            outputChannel.appendLine(`[Git] log -L failed (${history.failure.reason}): ${history.failure.detail}`);
+            vscode.window.showWarningMessage(`Chronos: ${history.failure.message}`);
             return;
         }
-        if (vscode.workspace.getConfiguration('chronos').get('viewMode') === 'panel') {
-            panelProvider.showGitHistory(commits, filePath, range, aiService.isConfigured());
-            vscode.commands.executeCommand('chronos.historyPanel.focus');
-        } else {
-            viewProvider.showGit(
-                commits, 
-                filePath, 
-                range,
-                (c: GitCommit) => explainGitCommit(c),
-                (h1: string, h2: string) => gitService.getCommitDiff(h1, h2, filePath, range.startLine, range.endLine),
-                aiService.isConfigured()
-            );
+
+        if (history.commits.length > 0) {
+            presentGitHistory(history.commits, filePath, range);
+            return;
         }
+
+        // Nothing followed those lines. A named block can still be traced by its
+        // name, which survives the moves and rewrites that -L cannot follow.
+        const traced = namePath ? await traceSymbolHistory(filePath, namePath) : undefined;
+        if (traced) {
+            vscode.window.setStatusBarMessage(`$(history) Chronos: no line history; showing commits that ${traced.how} "${traced.symbol}"`, 8000);
+            presentGitHistory(traced.commits, filePath, undefined);
+            return;
+        }
+
+        vscode.window.setStatusBarMessage(`$(history) Chronos: no git history for lines ${range.startLine + 1}-${range.endLine + 1}`, 5000);
     } catch (e) {
         vscode.window.showErrorMessage('Failed to show git history for selection: ' + e);
     }
+}
+
+function presentGitHistory(commits: GitCommit[], filePath: string, range?: LineRange) {
+    if (vscode.workspace.getConfiguration('chronos').get('viewMode') === 'panel') {
+        panelProvider.showGitHistory(commits, filePath, range, aiService.isConfigured());
+        vscode.commands.executeCommand('chronos.historyPanel.focus');
+        return;
+    }
+    viewProvider.showGit(
+        commits, 
+        filePath, 
+        range,
+        (c: GitCommit) => explainGitCommit(c),
+        // -1,-1 tells getCommitDiff to diff the whole file.
+        (h1: string, h2: string) => gitService.getCommitDiff(h1, h2, filePath, range?.startLine ?? -1, range?.endLine ?? -1),
+        aiService.isConfigured()
+    );
+}
+
+/**
+ * Last-resort trace of a named block through the file's history.
+ *
+ * The pickaxe (-S) counts occurrences, so it finds where the name was
+ * introduced or removed — few results, high confidence. Failing that, -G
+ * matches any patch mentioning it, which is broader but survives rewrites.
+ */
+async function traceSymbolHistory(filePath: string, namePath: string): Promise<{ commits: GitCommit[], symbol: string, how: string } | undefined> {
+    const symbol = namePath.split('.').pop() ?? '';
+    if (symbol.length === 0) return undefined;
+
+    const introduced = await gitService.getHistoryBySymbol(filePath, symbol, GIT_HISTORY_CONFIG);
+    if (introduced.length > 0) return { commits: introduced, symbol, how: 'added or removed' };
+
+    const mentioned = await gitService.getHistoryBySearch(filePath, escapeRegExp(symbol), GIT_HISTORY_CONFIG);
+    if (mentioned.length > 0) return { commits: mentioned, symbol, how: 'mention' };
+
+    return undefined;
+}
+
+function escapeRegExp(text: string): string {
+    return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 /**

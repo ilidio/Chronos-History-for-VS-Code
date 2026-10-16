@@ -55,6 +55,29 @@ export interface GitHistoryConfig {
     dateFormat: string;
 }
 
+export type GitRangeFailureReason =
+    | 'not-tracked'
+    | 'no-commits'
+    | 'bad-range'
+    | 'no-repo'
+    | 'git-missing'
+    | 'unknown';
+
+/** Why git could not answer, as opposed to there being no history. */
+export interface GitRangeFailure {
+    reason: GitRangeFailureReason;
+    /** One sentence for the user. */
+    message: string;
+    /** Raw stderr, for the log. */
+    detail: string;
+}
+
+export interface GitRangeHistory {
+    commits: GitCommit[];
+    /** Set when git itself failed. Absent means the answer is trustworthy. */
+    failure?: GitRangeFailure;
+}
+
 export interface GitCommit {
     hash: string;
     author: string;
