@@ -342,8 +342,11 @@ export class HistoryManager {
             
             const history = await this.storage.getHistoryForFile(doc.uri);
             let diff = '';
-            if (history.length > 0) {
-                const prev = history[0];
+            // Labels store no content, so they cannot be diffed against. The newest
+            // entry is often a label (they are matched for every file), and asking
+            // for its content threw, which silently aborted every save.
+            const prev = history.find(s => !!s.storagePath);
+            if (prev) {
                 const prevPath = (await this.storage.getSnapshotUri(prev, doc.uri)).fsPath;
                 diff = await this.gitService.getDiff(prevPath, doc.fileName);
                 

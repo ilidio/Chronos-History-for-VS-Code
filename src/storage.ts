@@ -170,37 +170,97 @@ export class HistoryStorage {
         if (!forceReload && this.indices.has(key)) return this.indices.get(key)!.index;
 
         const root = vscode.Uri.joinPath(indexUri, '..');
+
+        let raw: Uint8Array | undefined;
         try {
-            const data = await vscode.workspace.fs.readFile(indexUri);
-            const decoded = new TextDecoder().decode(data);
-            const index = JSON.parse(decoded);
-            
-            // Pro metadata maintenance
-            const workspaceFolder = vscode.workspace.workspaceFolders?.find(f => 
-                indexUri.toString().includes(f.uri.toString()) || 
-                (index.workspace && index.workspace.rootPath === f.uri.fsPath)
-            );
-            if (workspaceFolder) {
-                await this.registerWorkspace(root, workspaceFolder, index);
-            }
-
-            this.indices.set(key, { index, root });
-            this.log(`Loaded index: ${key} (${index.snapshots.length} snapshots)`);
-            return index;
+            raw = await vscode.workspace.fs.readFile(indexUri);
         } catch (e) {
-            // Only set empty if it doesn't exist, don't cache permanent failures
-            const newIndex: HistoryIndex = { snapshots: [] };
-            
-            // Try to initialize workspace metadata for new index
-            const workspaceFolder = vscode.workspace.workspaceFolders?.find(f => 
-                indexUri.toString().includes(f.uri.toString())
-            );
-            if (workspaceFolder) {
-                await this.registerWorkspace(root, workspaceFolder, newIndex);
+            // "No index yet" and "the index is there but unreadable" must not be
+            // conflated: starting fresh on a read error would let the next save
+            // overwrite history that is still on disk.
+            if (await this.exists(indexUri)) {
+                this.log(`Index unreadable: ${key} — ${e}`);
+                vscode.window.showWarningMessage(
+                    `Chronos: the history index at ${indexUri.fsPath} could not be read, so history is not being recorded. The existing history has been left untouched.`
+                );
+                throw e;
+            }
+            // First run for this project: a fresh index is created below.
+            raw = undefined;
+        }
+
+        if (raw) {
+            const index = this.parseIndex(raw);
+            if (index) {
+                // Pro metadata maintenance
+                const workspaceFolder = vscode.workspace.workspaceFolders?.find(f => 
+                    indexUri.toString().includes(f.uri.toString()) || 
+                    (index.workspace && index.workspace.rootPath === f.uri.fsPath)
+                );
+                if (workspaceFolder) {
+                    await this.registerWorkspace(root, workspaceFolder, index);
+                }
+
+                this.indices.set(key, { index, root });
+                this.log(`Loaded index: ${key} (${index.snapshots.length} snapshots)`);
+                return index;
             }
 
-            this.indices.set(key, { index: newIndex, root });
-            return newIndex;
+            // The index exists but is unreadable. Starting from an empty index would
+            // let the next save overwrite it, so keep the bytes aside first and tell
+            // the user where they went — they are the only copy of that history.
+            await this.quarantineIndex(indexUri, raw);
+        }
+
+        const newIndex: HistoryIndex = { snapshots: [] };
+        
+        // Try to initialize workspace metadata for new index
+        const workspaceFolder = vscode.workspace.workspaceFolders?.find(f => 
+            indexUri.toString().includes(f.uri.toString())
+        );
+        if (workspaceFolder) {
+            await this.registerWorkspace(root, workspaceFolder, newIndex);
+        }
+
+        this.indices.set(key, { index: newIndex, root });
+        return newIndex;
+    }
+
+    private async exists(uri: vscode.Uri): Promise<boolean> {
+        try {
+            await vscode.workspace.fs.stat(uri);
+            return true;
+        } catch (e) {
+            return false;
+        }
+    }
+
+    /** Parses index bytes, returning null when the content is not a usable index. */
+    private parseIndex(raw: Uint8Array): HistoryIndex | null {
+        try {
+            const parsed = JSON.parse(new TextDecoder().decode(raw));
+            if (!parsed || !Array.isArray(parsed.snapshots)) return null;
+            return parsed as HistoryIndex;
+        } catch (e) {
+            return null;
+        }
+    }
+
+    /** Copies a damaged index aside so it is never silently overwritten. */
+    private async quarantineIndex(indexUri: vscode.Uri, raw: Uint8Array): Promise<void> {
+        const backupUri = vscode.Uri.joinPath(indexUri, '..', `index.corrupt-${Date.now()}.json`);
+        try {
+            await vscode.workspace.fs.writeFile(backupUri, raw);
+            this.log(`Index unreadable: ${indexUri.toString()} — backed up to ${backupUri.fsPath}`);
+            vscode.window.showWarningMessage(
+                `Chronos: the history index was unreadable and has been backed up to ${backupUri.fsPath}. A new index was started.`
+            );
+        } catch (e) {
+            // Could not preserve it; at least make the failure visible.
+            this.log(`Index unreadable: ${indexUri.toString()} — backup FAILED: ${e}`);
+            vscode.window.showWarningMessage(
+                `Chronos: the history index at ${indexUri.fsPath} is unreadable and could not be backed up.`
+            );
         }
     }
 
@@ -478,9 +538,16 @@ export class HistoryStorage {
 
         const cutoff = Date.now() - (maxDays * 24 * 60 * 60 * 1000);
         const maxSizeBytes = maxSizeMB * 1024 * 1024;
+        const ownKeys = await this.getOwnIndexKeys();
 
         for (const [key, { index, root }] of this.indices) {
-            const originalCount = index.snapshots.length;
+            // Retention is per-project. The global store keeps every registered
+            // project's index loaded, so pruning anything but our own indices
+            // would delete another project's history using this project's limits.
+            if (!ownKeys.has(key)) {
+                continue;
+            }
+
             const toKeep: Snapshot[] = [];
             const toDelete: Snapshot[] = [];
 
@@ -494,6 +561,7 @@ export class HistoryStorage {
             }
 
             // 2. Prune by size if needed (oldest first)
+            let kept = toKeep;
             if (maxSizeBytes > 0) {
                 // Sort toKeep by timestamp ascending (oldest first)
                 toKeep.sort((a, b) => a.timestamp - b.timestamp);
@@ -514,22 +582,28 @@ export class HistoryStorage {
                     }
                 }
 
-                // Remove oldest until size is within limit
-                while (currentTotalSize > maxSizeBytes && toKeep.length > 0) {
-                    const oldest = toKeep.shift();
-                    if (oldest && !oldest.pinned) {
-                        toDelete.push(oldest);
-                        currentTotalSize -= sizeMap.get(oldest.id) || 0;
-                    } else if (oldest && oldest.pinned) {
-                        // If it's pinned, we keep it but it doesn't count towards pruning limit? 
-                        // Actually, if we hit here, we should probably stop or skip it.
-                        // For simplicity, pinned snapshots are never pruned even if they exceed size limit.
-                        continue; 
+                // Evict the oldest snapshots until we are within the limit, but only
+                // those that actually free space: pinned snapshots are never pruned,
+                // and entries without a blob (labels) reclaim nothing, so dropping
+                // either of them would lose history for no gain.
+                const survivors: Snapshot[] = [];
+                for (const s of toKeep) {
+                    const reclaimable = !s.pinned && !!s.storagePath;
+                    if (currentTotalSize > maxSizeBytes && reclaimable) {
+                        toDelete.push(s);
+                        currentTotalSize -= sizeMap.get(s.id) || 0;
+                    } else {
+                        survivors.push(s);
                     }
                 }
-                
+
+                if (currentTotalSize > maxSizeBytes) {
+                    this.log(`Still over the ${maxSizeMB}MB limit after pruning; pinned snapshots are never removed.`);
+                }
+
                 // Re-sort back to descending for the index
-                toKeep.sort((a, b) => b.timestamp - a.timestamp);
+                survivors.sort((a, b) => b.timestamp - a.timestamp);
+                kept = survivors;
             }
 
             if (toDelete.length > 0) {
@@ -542,11 +616,30 @@ export class HistoryStorage {
                     }
                 }
 
-                index.snapshots = toKeep;
+                index.snapshots = kept;
                 const indexUri = vscode.Uri.parse(key);
                 await this.saveIndex(index, indexUri);
             }
         }
+    }
+
+    /**
+     * Index keys that belong to the project(s) currently open. Used to keep
+     * destructive maintenance away from other projects sharing the global store.
+     */
+    private async getOwnIndexKeys(): Promise<Set<string>> {
+        const keys = new Set<string>();
+        const folders = vscode.workspace.workspaceFolders;
+        if (folders) {
+            for (const folder of folders) {
+                const { indexUri } = await this.getStorageForFile(folder.uri);
+                keys.add(indexUri.toString());
+            }
+        }
+        if (keys.size === 0) {
+            keys.add(vscode.Uri.joinPath(this.globalStorageRoot, 'index.json').toString());
+        }
+        return keys;
     }
 
     async search(query: string, searchContent: boolean = false): Promise<Snapshot[]> {
