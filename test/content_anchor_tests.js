@@ -7,6 +7,7 @@
  *  - the walk stops where the block first appears, instead of dragging on
  *  - a range nothing ever touched comes back empty, with no silent fallback
  *  - editor line numbers are mapped onto HEAD before `git log -L` sees them
+ *  - how each range was obtained reaches both webviews as a tooltip
  */
 
 const Module = require('module');
@@ -297,6 +298,50 @@ async function runContentAnchorTests() {
         assertEqual(rangeArg, '-L11,13:target.ts', 'the buffer range is used as is');
     } else {
         assert(false, 'git log -L was called');
+    }
+
+    // ── Section 7: how the range was obtained reaches the UI ─────────────────
+    console.log('\n[Test 11] The anchoring is turned into a tooltip for the views');
+    const { describeRangeAnchoring, withAnchoringLabels } = require('../out/utils/rangeLabel');
+
+    assertEqual(
+        describeRangeAnchoring({ relevantRange: { start: 3, end: 7 }, rangeAnchoring: 'content' }),
+        'Lines 4-8 \u2014 block re-found by content', 'a re-found block says so'
+    );
+    assertEqual(
+        describeRangeAnchoring({ relevantRange: { start: 3, end: 7 }, rangeAnchoring: 'origin' }),
+        'Lines 4-8 \u2014 earliest version of the block we hold', 'the origin says so'
+    );
+    assertEqual(
+        describeRangeAnchoring({ relevantRange: { start: 3, end: 7 }, rangeAnchoring: 'position' }),
+        'Lines 4-8 \u2014 tracked by position', 'positional tracking says so'
+    );
+    assertEqual(
+        describeRangeAnchoring({ relevantRange: { start: 5, end: 5 } }),
+        'Line 6 \u2014 tracked by position', 'a single line is not written as a range'
+    );
+    assertEqual(describeRangeAnchoring({ id: 'x' }), undefined, 'a snapshot with no range gets no label');
+
+    console.log('\n[Test 12] Labels are attached through the cluster wrappers');
+    const labelled = withAnchoringLabels([
+        { id: 'plain', relevantRange: { start: 0, end: 2 }, rangeAnchoring: 'content' },
+        { type: 'cluster', items: [{ id: 'inner', relevantRange: { start: 4, end: 4 }, rangeAnchoring: 'origin' }] },
+        { id: 'no-range' }
+    ]);
+    assert(String(labelled[0].anchoringLabel).includes('re-found'), 'a plain snapshot is labelled');
+    assertEqual(
+        labelled[1].items[0].anchoringLabel,
+        'Line 5 \u2014 earliest version of the block we hold', 'a clustered snapshot is labelled too'
+    );
+    assertEqual(labelled[2].anchoringLabel, undefined, 'a snapshot with no range is left alone');
+
+    console.log('\n[Test 13] Both views render the label');
+    const fs = require('fs');
+    for (const view of ['historyPanelProvider', 'historyWebview']) {
+        // The rows are built in browser JS inside an HTML string, so from Node
+        // the only way to check the wiring is to look for it in the output.
+        const source = fs.readFileSync(require.resolve(`../out/views/${view}.js`), 'utf8');
+        assert(source.includes('anchoringLabel'), `${view} renders the anchoring label`);
     }
 
     // ─── Summary ─────────────────────────────────────────────────────────────
