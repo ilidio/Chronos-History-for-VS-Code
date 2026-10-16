@@ -18,6 +18,7 @@ import { AIService } from './ai/aiService';
 import { BackupService } from './backup';
 import { ProjectRestorer } from './timeTravel';
 import { Snapshot, GitCommit } from './types';
+import { resolveContextForEditor, ResolvedContext } from './utils/contextResolver';
 
 let storage: HistoryStorage;
 let manager: HistoryManager;
@@ -69,6 +70,7 @@ export function activate(context: vscode.ExtensionContext) {
             divergenceProvider,
             vscode.commands.registerCommand('chronos.showHistory', showHistory),
             vscode.commands.registerCommand('chronos.showHistoryForSelection', showHistoryForSelection),
+            vscode.commands.registerCommand('chronos.showHistoryForContext', showHistoryForContext),
             vscode.commands.registerCommand('chronos.showProjectHistory', showProjectHistory),
             vscode.commands.registerCommand('chronos.showRecentChanges', showRecentChanges),
             vscode.commands.registerCommand('chronos.showGraph', showGraph),
@@ -100,6 +102,7 @@ export function activate(context: vscode.ExtensionContext) {
             vscode.commands.registerCommand('chronos.compareWithActive', compareWithActive),
             vscode.commands.registerCommand('chronos.showGitHistory', showGitHistory),
             vscode.commands.registerCommand('chronos.gitHistoryForSelection', gitHistoryForSelection),
+            vscode.commands.registerCommand('chronos.gitHistoryForContext', gitHistoryForContext),
             vscode.commands.registerCommand('chronos.restoreDeletedFile', restoreDeletedFile),
             vscode.commands.registerCommand('chronos.previewDeletedFile', previewDeletedFile),
             vscode.commands.registerCommand('chronos.generateCommitMessage', generateAICommitMessage),
@@ -647,33 +650,58 @@ async function showHistory(uri?: vscode.Uri, selection?: vscode.Range) {
 }
 
 async function showHistoryForSelection() {
-    await ensureStorage();
     const editor = vscode.window.activeTextEditor;
     if (!editor) return;
+    await showLocalHistoryForRange(editor, editor.selection);
+}
+
+async function showHistoryForContext() {
+    const editor = vscode.window.activeTextEditor;
+    if (!editor) return;
+    const context = await resolveContextForEditor(editor);
+    announceContext(context);
+    await showLocalHistoryForRange(editor, context.range);
+}
+
+/**
+ * Shared path for "History for Selection" and "History for Context": both end
+ * up filtering the local timeline down to a line range.
+ */
+async function showLocalHistoryForRange(editor: vscode.TextEditor, range: vscode.Range) {
+    await ensureStorage();
     const uri = editor.document.uri;
     const history = await storage.getHistoryForFile(uri);
-    const sel = editor.selection;
     const docLineCount = editor.document.lineCount;
 
-    // When the entire file is selected (Select All), skip selection-filtering
-    // and show the same result as Show History — a full-file timeline.
-    const isFullFile = sel.start.line === 0 && sel.end.line >= docLineCount - 1;
+    // When the entire file is covered (Select All, or a context that resolved to
+    // the whole module), skip range-filtering and show the same result as
+    // Show History — a full-file timeline.
+    const isFullFile = range.start.line === 0 && range.end.line >= docLineCount - 1;
     if (isFullFile) {
         showHistory(uri);
         return;
     }
 
     try {
-        const filtered = await historyFilter.filterHistoryForSelection(history, uri, sel);
+        const filtered = await historyFilter.filterHistoryForSelection(history, uri, range);
         if (vscode.workspace.getConfiguration('chronos').get('viewMode') === 'panel') {
-            panelProvider.showLocalHistory(filtered, uri.fsPath, editor.selection, aiService.isConfigured());
+            panelProvider.showLocalHistory(filtered, uri.fsPath, range, aiService.isConfigured());
             vscode.commands.executeCommand('chronos.historyPanel.focus');
         } else {
-            viewProvider.show(filtered, uri, (s: Snapshot) => getDiffForSnapshot(s, uri), sel, (q: string, sc: boolean) => storage.search(q, sc), (s: Snapshot) => explainSnapshot(s, uri), (q: string) => manager.semanticSearch(q), (id: string) => manager.togglePin(id), (s1: Snapshot, s2: Snapshot) => compareSnapshots(s1, s2), undefined, aiService.isConfigured());
+            viewProvider.show(filtered, uri, (s: Snapshot) => getDiffForSnapshot(s, uri), range, (q: string, sc: boolean) => storage.search(q, sc), (s: Snapshot) => explainSnapshot(s, uri), (q: string) => manager.semanticSearch(q), (id: string) => manager.togglePin(id), (s1: Snapshot, s2: Snapshot) => compareSnapshots(s1, s2), undefined, aiService.isConfigured());
         }
     } catch (e) {
         vscode.window.showErrorMessage('Failed to show selection history: ' + e);
     }
+}
+
+/** Tells the user which block the history was resolved to, and how. */
+function announceContext(context: ResolvedContext) {
+    const lines = `lines ${context.startLine + 1}-${context.endLine + 1}`;
+    const where = context.anchor.namePath
+        ? `${context.anchor.kind || 'Block'} ${context.anchor.namePath} (${lines})`
+        : lines;
+    vscode.window.setStatusBarMessage(`$(history) Chronos: history for ${where}`, 5000);
 }
 
 async function showProjectHistory() {
@@ -826,22 +854,42 @@ async function gitHistoryForSelection() {
     if (!editor) return;
     const selection = editor.selection;
     if (selection.isEmpty) return;
+    await showGitHistoryForRange(editor, selection.start.line, selection.end.line);
+}
+
+async function gitHistoryForContext() {
+    const editor = vscode.window.activeTextEditor;
+    if (!editor) return;
+    const context = await resolveContextForEditor(editor);
+    announceContext(context);
+    await showGitHistoryForRange(editor, context.startLine, context.endLine);
+}
+
+/**
+ * Shared path for "Git History for Selection" and "Git History for Context":
+ * both resolve to a line range handed to `git log -L`.
+ */
+async function showGitHistoryForRange(editor: vscode.TextEditor, startLine: number, endLine: number) {
+    const filePath = editor.document.uri.fsPath;
+    const range = { startLine, endLine };
     try {
-        const commits = await gitService.getHistoryForSelection(editor.document.uri.fsPath, selection.start.line, selection.end.line, { maxCommits: 100, followRenames: true, dateFormat: 'yyyy-MM-dd HH:mm' });
-        if (commits.length > 0) {
-            if (vscode.workspace.getConfiguration('chronos').get('viewMode') === 'panel') {
-                panelProvider.showGitHistory(commits, editor.document.uri.fsPath, { startLine: selection.start.line, endLine: selection.end.line }, aiService.isConfigured());
-                vscode.commands.executeCommand('chronos.historyPanel.focus');
-            } else {
-                viewProvider.showGit(
-                    commits, 
-                    editor.document.uri.fsPath, 
-                    { startLine: selection.start.line, endLine: selection.end.line },
-                    (c: GitCommit) => explainGitCommit(c),
-                    (h1: string, h2: string) => gitService.getCommitDiff(h1, h2, editor.document.uri.fsPath, selection.start.line, selection.end.line),
-                    aiService.isConfigured()
-                );
-            }
+        const commits = await gitService.getHistoryForSelection(filePath, startLine, endLine, { maxCommits: 100, followRenames: true, dateFormat: 'yyyy-MM-dd HH:mm' });
+        if (commits.length === 0) {
+            vscode.window.setStatusBarMessage(`$(history) Chronos: no git history for lines ${startLine + 1}-${endLine + 1}`, 5000);
+            return;
+        }
+        if (vscode.workspace.getConfiguration('chronos').get('viewMode') === 'panel') {
+            panelProvider.showGitHistory(commits, filePath, range, aiService.isConfigured());
+            vscode.commands.executeCommand('chronos.historyPanel.focus');
+        } else {
+            viewProvider.showGit(
+                commits, 
+                filePath, 
+                range,
+                (c: GitCommit) => explainGitCommit(c),
+                (h1: string, h2: string) => gitService.getCommitDiff(h1, h2, filePath, startLine, endLine),
+                aiService.isConfigured()
+            );
         }
     } catch (e) {
         vscode.window.showErrorMessage('Failed to show git history for selection: ' + e);
