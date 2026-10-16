@@ -88,6 +88,13 @@ if [ $? -ne 0 ]; then
     exit 1
 fi
 
+echo "🧪 Running Git Integration Tests (real git)..."
+node test/git_integration_tests.js
+if [ $? -ne 0 ]; then
+    echo "❌ Git Integration tests failed!"
+    exit 1
+fi
+
 echo "🧪 Running History-Loss Regression Tests..."
 node test/data_loss_tests.js
 if [ $? -ne 0 ]; then
