@@ -25,13 +25,33 @@ Instructions for Claude when working in this repository.
 
 ## Testing
 
-This project uses a **custom mock-based test suite**, not Jest/Mocha. Tests run as plain Node scripts against `test/mock_vscode.js`.
+Two layers, with different reach.
 
-- **Full suite:** `./test.sh` (compiles first, then runs the runner + pro/comparison/git-parser/path-matching/menu/interop-hash tests).
-- **Individual suites:** `node test/run_tests.js`, `node test/git_parser_tests.js`, `node test/path_matching_tests.js`, etc.
-- **AI tests:** `node test/comprehensive_ai_tests.js` (requires `.gemini.test.json` with a real key — do not commit keys).
+**1. Mock-based suites — the default.** Plain Node scripts against
+`test/mock_vscode.js`, no Jest. This is where logic changes are covered.
 
-**Rule:** every logic change must come with a test update or a new case in `test/`, using the existing mocks. Run `./test.sh` before considering a change done.
+- **Full suite:** `./test.sh` (compiles first, then runs every suite).
+- **Individual suites:** `node test/run_tests.js`, `node test/git_parser_tests.js`,
+  `node test/content_anchor_tests.js`, etc.
+- **Real git:** `test/git_integration_tests.js` builds a throwaway repository in
+  `os.tmpdir()` and mocks only `vscode`, so `git diff`/`git log -L` run for real.
+  It is in `./test.sh`.
+- **AI tests:** `node test/comprehensive_ai_tests.js` (requires `.gemini.test.json`
+  with a real key — do not commit keys).
+
+**2. Real VS Code — `npm run test:integration`.** Launches an actual VS Code via
+`@vscode/test-electron` (mocha, inside the extension host) against the workspace in
+`test/integration/fixture/`. This is the only place the real API is exercised: what
+a language extension's symbol provider really returns, and whether `vscode.diff`
+positions the editor when handed a selection. **Not in `./test.sh`** — it needs a
+display, so on Linux/CI it must run under `xvfb-run`. VS Code is downloaded on first
+run into `.vscode-test/`.
+
+**Rule:** every logic change must come with a test update or a new case in `test/`,
+using the existing mocks. Run `./test.sh` before considering a change done. When a
+change rests on how the VS Code API behaves rather than on our own logic, add a case
+to the integration suite too — a mock written by hand cannot disagree with the
+assumption it encodes.
 
 ## Architecture
 
