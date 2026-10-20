@@ -397,6 +397,81 @@ async function runSelectionHistoryTests() {
         mockVscode.commands.executeCommand = origExecute;
     }
 
+    // ── Test 9: a file with no snapshots at all ─────────────────────────────
+    console.log('\n[Test 9] A file with no snapshots opens the panel, not a notification');
+    {
+        // "No snapshot changed these lines" would blame the range for something
+        // else entirely: nothing was ever recorded for this file.
+        let warnings = 0;
+        let focusedPanel = false;
+        const origWarning = mockVscode.window.showWarningMessage;
+        const origInfo = mockVscode.window.showInformationMessage;
+        const origConfig = mockVscode.workspace.getConfiguration;
+        const origExecute = mockVscode.commands.executeCommand;
+
+        mockVscode.window.showWarningMessage = () => { warnings++; };
+        mockVscode.window.showInformationMessage = () => { warnings++; };
+        // Panel mode gives an observable signal: showHistory focuses the panel.
+        // (The editor-mode path reuses a panel an earlier test already created,
+        // so counting createWebviewPanel would prove nothing here.)
+        mockVscode.workspace.getConfiguration = (section) => ({
+            get: (key, def) => (key === 'viewMode' ? 'panel' : def)
+        });
+        mockVscode.commands.executeCommand = async (cmd, ...args) => {
+            if (cmd === 'chronos.historyPanel.focus') focusedPanel = true;
+            if (commandsMap.has(cmd)) return commandsMap.get(cmd)(...args);
+        };
+
+        const unknown = mockVscode.Uri.file('/workspace/never-seen.ts');
+        mockVscode.window.activeTextEditor = {
+            document: { uri: unknown, getText: () => 'a\nb\nc\nd\ne', lineCount: 5 },
+            selection: new mockVscode.Range(1, 0, 2, 3)
+        };
+
+        try {
+            await commandsMap.get('chronos.showHistoryForSelection')();
+            await new Promise(r => setTimeout(r, 30));
+            assertEqual(warnings, 0, 'no notification is shown');
+            assert(focusedPanel, 'the history panel is opened, to show its own empty state');
+        } finally {
+            mockVscode.window.showWarningMessage = origWarning;
+            mockVscode.window.showInformationMessage = origInfo;
+            mockVscode.workspace.getConfiguration = origConfig;
+            mockVscode.commands.executeCommand = origExecute;
+        }
+    }
+
+    // ── Test 10: snapshots exist but the range was never touched ────────────
+    console.log('\n[Test 10] A range no snapshot touched is reported, not silently widened');
+    {
+        let panels = 0;
+        const warningTexts = [];
+        const origPanel = mockVscode.window.createWebviewPanel;
+        const origWarning = mockVscode.window.showWarningMessage;
+        mockVscode.window.createWebviewPanel = (...args) => { panels++; return origPanel(...args); };
+        mockVscode.window.showWarningMessage = (msg) => { warningTexts.push(String(msg)); };
+
+        // The mocked diff only ever touches line 3, so a range well below it has
+        // genuinely never changed.
+        mockVscode.window.activeTextEditor = {
+            document: { uri: fileUri, getText: () => 'x', lineCount: 10 },
+            selection: new mockVscode.Range(6, 0, 7, 4)
+        };
+
+        try {
+            await commandsMap.get('chronos.showHistoryForSelection')();
+            await new Promise(r => setTimeout(r, 30));
+            assertEqual(warningTexts.length, 1, 'the user is told');
+            if (warningTexts.length > 0) {
+                assert(warningTexts[0].includes('none of the'), 'and the message counts the snapshots that exist');
+            }
+            assertEqual(panels, 0, 'no view opens with history that does not answer the question');
+        } finally {
+            mockVscode.window.createWebviewPanel = origPanel;
+            mockVscode.window.showWarningMessage = origWarning;
+        }
+    }
+
     // ─── Summary ──────────────────────────────────────────────────────────────
     console.log(`\n--- Selection History Tests Complete: ${passed} passed, ${failed} failed ---`);
     if (failed > 0) process.exitCode = 1;

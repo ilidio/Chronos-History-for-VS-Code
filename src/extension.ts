@@ -678,10 +678,22 @@ async function showLocalHistoryForRange(editor: vscode.TextEditor, range: vscode
     try {
         const filtered = await historyFilter.filterHistoryForSelection(history, uri, range, anchor);
         if (filtered.length === 0) {
-            // Say so, instead of quietly widening back to the whole file.
-            const lines = `lines ${range.start.line + 1}-${inclusiveEndLine(range) + 1}`;
-            const choice = await vscode.window.showInformationMessage(
-                `Chronos: no snapshot out of ${history.length} changed ${lines}.`,
+            if (history.length === 0) {
+                // Nothing was ever snapshotted for this file. That is not a
+                // statement about the range, and an empty panel says it far
+                // better than a notification in the corner, which is easy to
+                // miss entirely — it just looks like the command did nothing.
+                showHistory(uri);
+                return;
+            }
+
+            // There is history, but none of it touched this block. Worth saying,
+            // and worth saying loudly enough to be noticed.
+            const block = anchor?.signatureLine
+                ? `"${truncate(anchor.signatureLine, 40)}"`
+                : `lines ${range.start.line + 1}-${inclusiveEndLine(range) + 1}`;
+            const choice = await vscode.window.showWarningMessage(
+                `Chronos: none of the ${history.length} snapshots of this file changed ${block}.`,
                 'Show Full History'
             );
             if (choice === 'Show Full History') showHistory(uri);
@@ -696,6 +708,11 @@ async function showLocalHistoryForRange(editor: vscode.TextEditor, range: vscode
     } catch (e) {
         vscode.window.showErrorMessage('Failed to show selection history: ' + e);
     }
+}
+
+function truncate(text: string, max: number): string {
+    const trimmed = text.trim();
+    return trimmed.length <= max ? trimmed : `${trimmed.slice(0, max - 1)}\u2026`;
 }
 
 /** Last line a range actually covers, accounting for VS Code's exclusive end. */
