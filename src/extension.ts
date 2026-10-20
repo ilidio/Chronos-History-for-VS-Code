@@ -712,7 +712,11 @@ async function showLocalHistoryForRange(editor: vscode.TextEditor, range: vscode
     }
 
     try {
-        const filtered = await historyFilter.filterHistoryForSelection(history, uri, range, anchor);
+        const { relevant: filtered, unreadable } = await historyFilter.filterHistoryForRange(history, uri, range, anchor);
+        const block = anchor?.signatureLine
+            ? `"${truncate(anchor.signatureLine, 40)}"`
+            : `lines ${range.start.line + 1}-${inclusiveEndLine(range) + 1}`;
+
         if (filtered.length === 0) {
             if (history.length === 0) {
                 // Nothing was ever snapshotted for this file. That is not a
@@ -723,11 +727,27 @@ async function showLocalHistoryForRange(editor: vscode.TextEditor, range: vscode
                 return;
             }
 
-            // There is history, but none of it touched this block. Worth saying,
-            // and worth saying loudly enough to be noticed.
-            const block = anchor?.signatureLine
-                ? `"${truncate(anchor.signatureLine, 40)}"`
-                : `lines ${range.start.line + 1}-${inclusiveEndLine(range) + 1}`;
+            // An empty result has two very different causes, and saying the
+            // wrong one sends the user looking for history that is right there,
+            // or stops them looking for content that is gone.
+            if (unreadable.length > 0) {
+                const n = unreadable.length;
+                const readable = history.length - n;
+                const alsoChecked = readable > 0
+                    ? ` The other ${readable} did not change it.`
+                    : '';
+                const choice = await vscode.window.showWarningMessage(
+                    `Chronos: ${n} of the ${history.length} snapshots of this file cannot be read — their content is no longer in storage, so there is no way to tell whether they changed ${block}.${alsoChecked}`,
+                    'Show Full History',
+                    'Run Diagnostics'
+                );
+                if (choice === 'Show Full History') showHistory(uri);
+                else if (choice === 'Run Diagnostics') vscode.commands.executeCommand('chronos.runDiagnostics');
+                return;
+            }
+
+            // There is history, all of it readable, and none of it touched this
+            // block. Worth saying, and worth saying loudly enough to be noticed.
             const choice = await vscode.window.showWarningMessage(
                 `Chronos: none of the ${history.length} snapshots of this file changed ${block}.`,
                 'Show Full History'
@@ -735,6 +755,15 @@ async function showLocalHistoryForRange(editor: vscode.TextEditor, range: vscode
             if (choice === 'Show Full History') showHistory(uri);
             return;
         }
+        if (unreadable.length > 0) {
+            // The list is usable but incomplete. A status bar message says so
+            // without putting a dialog in front of a result the user asked for.
+            vscode.window.setStatusBarMessage(
+                `Chronos: ${unreadable.length} snapshot(s) of this file could not be read — content missing from storage.`,
+                6000
+            );
+        }
+
         if (vscode.workspace.getConfiguration('chronos').get('viewMode') === 'panel') {
             panelProvider.showLocalHistory(filtered, uri.fsPath, range, aiService.isConfigured());
             vscode.commands.executeCommand('chronos.historyPanel.focus');

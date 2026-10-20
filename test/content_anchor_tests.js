@@ -8,6 +8,8 @@
  *  - a range nothing ever touched comes back empty, with no silent fallback
  *  - editor line numbers are mapped onto HEAD before `git log -L` sees them
  *  - how each range was obtained reaches both webviews as a tooltip
+ *  - a version whose content is gone is reported as unreadable, not as proof
+ *    that the block never changed
  */
 
 const Module = require('module');
@@ -345,6 +347,72 @@ async function runContentAnchorTests() {
         assert(source.includes('revealDiffTarget'), `${view} scrolls its diff to the target range`);
         assert(source.includes('data-new-line'), `${view} tags diff rows with their line number`);
     }
+
+
+    // ── Section 5: a version whose content is gone ───────────────────────────
+    console.log('\n[Test 14] A snapshot with no content is reported as unreadable');
+    // Three versions; only the newest still has its blob. This is the shape of
+    // a store whose index outlived its content.
+    const brokenHistory = [
+        await putSnapshot('broken-c', 3000, ['header', FOO, '    body', '}']),
+        { id: 'broken-b', timestamp: 2000, filePath: 'target.ts', eventType: 'save', storagePath: 'broken-b' },
+        { id: 'broken-a', timestamp: 1000, filePath: 'target.ts', eventType: 'save', storagePath: 'broken-a' }
+    ];
+    await mockVscode.workspace.fs.writeFile(FILE, new TextEncoder().encode(['header', FOO, '    body', '}'].join('\n')));
+
+    // Real git fails outright on a path that is not there, so the stub does too.
+    const brokenFilter = new HistoryFilter(
+        { getSnapshotUri: async (snapshot) => mockVscode.Uri.joinPath(ROOT, snapshot.storagePath) },
+        {
+            getHunks: async (oldPath, newPath) => {
+                for (const p of [oldPath, newPath]) {
+                    if (!fsStore.has(mockVscode.Uri.file(p).toString())) {
+                        throw new Error(`fatal: cannot read ${p}: No such file or directory`);
+                    }
+                }
+                return '';
+            }
+        }
+    );
+
+    const brokenResult = await brokenFilter.filterHistoryForRange(
+        brokenHistory, FILE, new mockVscode.Range(1, 0, 3, 1), { signatureLine: FOO }
+    );
+
+    assertEqual(brokenResult.unreadable.length, 2, 'both versions with no content are reported as unreadable');
+    assertEqual(
+        brokenResult.unreadable.map(s => s.id).sort().join(','), 'broken-a,broken-b',
+        'and they are the two whose blobs are missing'
+    );
+    assertEqual(brokenResult.relevant.length, 0, 'nothing is claimed as a change the walk could not verify');
+
+    console.log('\n[Test 15] A readable history reports nothing as unreadable');
+    const intactResult = await brokenFilter.filterHistoryForRange(
+        [brokenHistory[0]], FILE, new mockVscode.Range(1, 0, 3, 1), { signatureLine: FOO }
+    );
+    assertEqual(intactResult.unreadable.length, 0, 'a history whose content is all present reports no unreadable versions');
+
+    console.log('\n[Test 16] A label is not mistaken for broken content');
+    const withLabel = [
+        brokenHistory[0],
+        { id: 'lbl', timestamp: 2500, filePath: '', eventType: 'label', label: 'Before refactor' }
+    ];
+    const labelResult = await brokenFilter.filterHistoryForRange(
+        withLabel, FILE, new mockVscode.Range(1, 0, 3, 1), { signatureLine: FOO }
+    );
+    assertEqual(labelResult.unreadable.length, 0, 'a content-less label is not reported as unreadable');
+
+    console.log('\n[Test 17] The command distinguishes the two cases in what it says');
+    const extensionSource = require('fs').readFileSync(require.resolve('../out/extension.js'), 'utf8');
+    assert(extensionSource.includes('cannot be read'),
+        'the empty-result path can say that versions could not be read');
+    assert(extensionSource.includes('none of the'),
+        'and still says when the block simply never changed');
+
+    // The old behaviour: an unreadable version left the list empty and the user
+    // was told the block never changed. That must not be what happens now.
+    assert(brokenResult.relevant.length === 0 && brokenResult.unreadable.length > 0,
+        'an empty result carries the reason it is empty');
 
     // ─── Summary ─────────────────────────────────────────────────────────────
     console.log(`\n--- Content Anchor Tests: ${passed} passed, ${failed} failed ---\n`);

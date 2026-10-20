@@ -17,6 +17,19 @@ export interface RangeAnchor {
     signatureLine: string;
 }
 
+/** What a range walk found, and what it could not look at. */
+export interface RangeHistoryResult {
+    /** Snapshots where the range changed, newest first. */
+    relevant: Snapshot[];
+    /**
+     * Snapshots that could not be read: listed in the index, content gone from
+     * storage. They are not evidence that the block did not change — nothing
+     * can be said about them at all, which is a different answer and has to be
+     * reported as one.
+     */
+    unreadable: Snapshot[];
+}
+
 /** Internal result of placing a range inside one snapshot. */
 interface Landing {
     range: LineRange;
@@ -51,7 +64,39 @@ export class HistoryFilter {
         selection: vscode.Range,
         anchor?: RangeAnchor
     ): Promise<Snapshot[]> {
-        if (history.length === 0) return [];
+        return (await this.filterHistoryForRange(history, fileUri, selection, anchor)).relevant;
+    }
+
+    /**
+     * The same walk, with the snapshots it could not read reported separately.
+     *
+     * "The block never changed here" and "this version cannot be read" look
+     * identical in a filtered list — both leave the entry out — and conflating
+     * them tells the user the file has no history for the block when the truth
+     * is that its content is missing.
+     */
+    async filterHistoryForRange(
+        history: Snapshot[],
+        fileUri: vscode.Uri,
+        selection: vscode.Range,
+        anchor?: RangeAnchor
+    ): Promise<RangeHistoryResult> {
+        const unreadable: Snapshot[] = [];
+        if (history.length === 0) return { relevant: [], unreadable };
+
+        // Storage has already told us which entries have no content on disk.
+        // They are set aside before the walk rather than discovered during it:
+        // `git diff --no-index` against a path that is not there resolves to no
+        // output, which reads as "nothing changed here" — a missing version
+        // would otherwise be silently counted as evidence that the block never
+        // changed, which is the opposite of what is known about it.
+        const missingContent = history.filter(s => s.contentMissing && s.storagePath);
+        for (const snapshot of missingContent) unreadable.push(snapshot);
+        if (missingContent.length > 0) {
+            console.log(`[HistoryFilter] ${missingContent.length} snapshot(s) have no content in storage and cannot be compared.`);
+            history = history.filter(s => !(s.contentMissing && s.storagePath));
+            if (history.length === 0) return { relevant: [], unreadable };
+        }
 
         // Sort new -> old
         const sorted = [...history].sort((a, b) => b.timestamp - a.timestamp);
@@ -80,7 +125,8 @@ export class HistoryFilter {
             }
             console.log(`[HistoryFilter] Initial map (Current -> Newest): ${range.startLine}-${range.endLine} (${anchoring})`);
         } catch (e) {
-            console.error('[HistoryFilter] Error mapping initial range:', e);
+            await this.noteUnreadable([sorted[0]], fileUri, unreadable, e,
+                '[HistoryFilter] Error mapping initial range:');
         }
 
         const relevant: Snapshot[] = [];
@@ -93,7 +139,8 @@ export class HistoryFilter {
             try {
                 hunks = await this.hunksBetween(oldSnapshot, newSnapshot, fileUri);
             } catch (e) {
-                console.error(`[HistoryFilter] Error diffing snapshots at index ${i}:`, e);
+                await this.noteUnreadable([newSnapshot, oldSnapshot], fileUri, unreadable, e,
+                    `[HistoryFilter] Error diffing snapshots at index ${i}:`);
                 continue;
             }
 
@@ -109,7 +156,7 @@ export class HistoryFilter {
                 // first appears, and there is nothing older to follow.
                 console.log(`[HistoryFilter] Block originates in ${newSnapshot.id}; stopping the walk.`);
                 markOrigin(relevant, newSnapshot, range, touched);
-                return relevant;
+                return { relevant, unreadable };
             }
 
             range = landed.range;
@@ -127,8 +174,47 @@ export class HistoryFilter {
             console.log(`[HistoryFilter] Oldest snapshot included: ${oldest.id} (range ${range.startLine}-${range.endLine})`);
         }
 
-        console.log(`[HistoryFilter] Found ${relevant.length} relevant snapshots.`);
-        return relevant;
+        console.log(`[HistoryFilter] Found ${relevant.length} relevant snapshots${unreadable.length > 0 ? `, ${unreadable.length} unreadable` : ''}.`);
+        return { relevant, unreadable };
+    }
+
+    /**
+     * Records the snapshots in `candidates` whose content is gone.
+     *
+     * A diff can fail for reasons that have nothing to do with storage, so the
+     * failure alone is not enough: each candidate is checked against disk, and
+     * only a genuinely missing blob is reported as unreadable. Anything else
+     * stays what it was — an error worth logging.
+     */
+    private async noteUnreadable(
+        candidates: Snapshot[],
+        fileUri: vscode.Uri,
+        unreadable: Snapshot[],
+        error: unknown,
+        logPrefix: string
+    ): Promise<void> {
+        const missing: Snapshot[] = [];
+        for (const snapshot of candidates) {
+            // An entry with no storagePath (a label) holds no content by
+            // design; it is not broken and never was part of the content walk.
+            if (!snapshot?.storagePath) continue;
+            try {
+                const uri = await this.storage.getSnapshotUri(snapshot, fileUri);
+                await vscode.workspace.fs.stat(uri);
+            } catch {
+                missing.push(snapshot);
+            }
+        }
+
+        if (missing.length === 0) {
+            console.error(logPrefix, error);
+            return;
+        }
+
+        for (const snapshot of missing) {
+            if (!unreadable.some(u => u.id === snapshot.id)) unreadable.push(snapshot);
+        }
+        console.log(`[HistoryFilter] Cannot read ${missing.map(m => m.id).join(', ')}: content is not in storage.`);
     }
 
     private async hunksBetween(oldSnapshot: Snapshot, newSnapshot: Snapshot, fileUri: vscode.Uri): Promise<DiffHunk[]> {

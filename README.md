@@ -197,6 +197,12 @@ are listed but have nothing to open.
     never touches an entry whose content is still there — each one is re-checked
     against disk immediately before it is dropped. Projects other than the ones
     you have open are reported but left alone.
+*   **Show History for Context / for Selection** separates "none of your
+    snapshots changed this block" from "these versions cannot be read". If some
+    versions have lost their content, you get the ones that are still readable
+    plus a note about the rest; if none can be read, Chronos says that, with a
+    shortcut to the diagnostics — it no longer claims the block was never
+    touched.
 *   In the history view, an entry whose content is missing is shown as
     *content unavailable* instead of being offered as a diff. That is a judgement
     made each time the list is read, never written into the index: if the content

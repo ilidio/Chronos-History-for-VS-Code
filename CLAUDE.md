@@ -85,6 +85,13 @@ rules hold:
   acts only on the reports its caller passes in. The count and the file list go
   to the user before the modal confirmation (`cleanOrphanedHistory` in
   `extension.ts`); diagnostics report the same numbers read-only.
+- **"Could not read it" is not "it did not change".** A missing blob makes
+  `git diff --no-index` resolve to *no output*, which the range walk would read
+  as "this block never changed here". `filterHistoryForRange()` sets those
+  versions aside before the walk and returns them as `unreadable`, and the
+  command says so instead of claiming the block has no history. Covered in
+  `test/integration/suite/context_availability.test.js`, because the premise is
+  real git's behaviour, not ours.
 - **Missing content is a read-time judgement, never a record.** `getHistoryForFile`
   annotates entries with a transient `contentMissing`; it is never written to
   `index.json`, because the content may be a remount away.
