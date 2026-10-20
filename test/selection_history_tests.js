@@ -472,6 +472,46 @@ async function runSelectionHistoryTests() {
         }
     }
 
+    // ── Test 11: the snapshot's content is gone from storage ────────────────
+    console.log('\n[Test 11] A snapshot whose blob is missing is reported, not opened');
+    {
+        // The index can outlive the blobs it points at. Handing the missing file
+        // to vscode.diff opens an editor that fails with "file was not found",
+        // which says nothing about what is wrong.
+        let diffCalled = false;
+        const warnings = [];
+        const origExecute = mockVscode.commands.executeCommand;
+        const origWarning = mockVscode.window.showWarningMessage;
+        mockVscode.commands.executeCommand = async (cmd, ...args) => {
+            if (cmd === 'vscode.diff') diffCalled = true;
+            if (commandsMap.has(cmd)) return commandsMap.get(cmd)(...args);
+        };
+        mockVscode.window.showWarningMessage = (msg) => { warnings.push(String(msg)); };
+
+        const orphan = {
+            id: 'orphan-snapshot',
+            timestamp: 1700000000000,
+            filePath: 'target.ts',
+            eventType: 'save',
+            storagePath: 'blob-that-was-deleted',
+            relevantRange: { start: 2, end: 2 }
+        };
+
+        try {
+            await commandsMap.get('_chronos.openDiff')(orphan, fileUri.fsPath, { startLine: 2, endLine: 2 });
+            await new Promise(r => setTimeout(r, 20));
+
+            assertEqual(diffCalled, false, 'no diff editor is opened onto a file that is not there');
+            assertEqual(warnings.length, 1, 'the user is told instead');
+            if (warnings.length > 0) {
+                assert(warnings[0].includes('no longer in storage'), 'and the message says the content is gone');
+            }
+        } finally {
+            mockVscode.commands.executeCommand = origExecute;
+            mockVscode.window.showWarningMessage = origWarning;
+        }
+    }
+
     // ─── Summary ──────────────────────────────────────────────────────────────
     console.log(`\n--- Selection History Tests Complete: ${passed} passed, ${failed} failed ---`);
     if (failed > 0) process.exitCode = 1;

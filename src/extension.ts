@@ -402,7 +402,8 @@ async function openDiff(snapshot: Snapshot, baseFilePath: string, currentSelecti
         : snapshot.relevantRange;
 
     try {
-        const snapshotUri = await storage.getSnapshotUri(snapshot, fileUri);
+        const snapshotUri = await snapshotContentUri(snapshot, fileUri);
+        if (!snapshotUri) return;
         const title = `${fileName} (${timestamp}) \u2194 ${fileName} (Current)`;
         await vscode.commands.executeCommand('vscode.diff', snapshotUri, fileUri, title, showOptions(target));
     } catch (e) {
@@ -597,8 +598,9 @@ async function compareTwoSnapshots(s1: Snapshot, s2: Snapshot) {
     try {
         const uri1 = resolveSnapshotUri(snap1.filePath);
         const uri2 = resolveSnapshotUri(snap2.filePath);
-        const snap1Uri = await storage.getSnapshotUri(snap1, uri1);
-        const snap2Uri = await storage.getSnapshotUri(snap2, uri2);
+        const snap1Uri = await snapshotContentUri(snap1, uri1);
+        const snap2Uri = await snapshotContentUri(snap2, uri2);
+        if (!snap1Uri || !snap2Uri) return;
 
         const fileName1 = path.basename(snap1.filePath);
         const fileName2 = path.basename(snap2.filePath);
@@ -710,6 +712,37 @@ async function showLocalHistoryForRange(editor: vscode.TextEditor, range: vscode
     }
 }
 
+/**
+ * A snapshot's content on disk, or nothing plus an explanation.
+ *
+ * The index can outlive the blobs it points at — a storage path that changed
+ * under it, a prune, a manual cleanup — and handing a missing file to
+ * `vscode.diff` opens an editor that fails with "the file was not found",
+ * which tells the user neither what is missing nor why.
+ */
+async function snapshotContentUri(snapshot: Snapshot, fileUri: vscode.Uri): Promise<vscode.Uri | undefined> {
+    let uri: vscode.Uri;
+    try {
+        uri = await storage.getSnapshotUri(snapshot, fileUri);
+    } catch (e) {
+        vscode.window.showErrorMessage(`Chronos: ${e instanceof Error ? e.message : String(e)}`);
+        return undefined;
+    }
+
+    try {
+        await vscode.workspace.fs.stat(uri);
+        return uri;
+    } catch {
+        const when = new Date(snapshot.timestamp).toLocaleString();
+        const choice = await vscode.window.showWarningMessage(
+            `Chronos: the content of the snapshot from ${when} is no longer in storage, so there is nothing to compare. The entry is still listed, but its file is gone.`,
+            'Run Diagnostics'
+        );
+        if (choice === 'Run Diagnostics') vscode.commands.executeCommand('chronos.runDiagnostics');
+        return undefined;
+    }
+}
+
 function truncate(text: string, max: number): string {
     const trimmed = text.trim();
     return trimmed.length <= max ? trimmed : `${trimmed.slice(0, max - 1)}\u2026`;
@@ -793,7 +826,8 @@ async function compareToCurrent(snapshotId: string, filePath?: string) {
     const snapshot = history.find(s => s.id === snapshotId);
     if (!snapshot) return;
     try {
-        const snapshotUri = await storage.getSnapshotUri(snapshot, fileUri);
+        const snapshotUri = await snapshotContentUri(snapshot, fileUri);
+        if (!snapshotUri) return;
         const fileName = path.basename(fileUri.fsPath);
         const timestamp = new Date(snapshot.timestamp).toLocaleString();
         const title = `${fileName} (${timestamp}) ↔ ${fileName} (Current)`;
@@ -815,7 +849,8 @@ async function compareWithActive(snapshot: Snapshot) {
     const originalUri = resolveSnapshotUri(snapshot.filePath);
 
     try {
-        const snapshotUri = await storage.getSnapshotUri(snapshot, originalUri);
+        const snapshotUri = await snapshotContentUri(snapshot, originalUri);
+        if (!snapshotUri) return;
         const sourceName = path.basename(snapshot.filePath);
         const targetName = path.basename(targetUri.fsPath);
         const timestamp = new Date(snapshot.timestamp).toLocaleString();
