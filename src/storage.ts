@@ -723,31 +723,51 @@ export class HistoryStorage {
         return vscode.Uri.joinPath(root, snapshot.storagePath);
     }
 
-    private async saveIndex(index: HistoryIndex, indexUri: vscode.Uri) {
-        this.saveQueue = this.saveQueue.then(async () => {
-            try {
-                // Update activity timestamp before saving
-                if (index.workspace) {
-                    index.workspace.lastActivity = Date.now();
-                    
-                    // Re-register to update the global workspaces.json
-                    const workspaceFolder = vscode.workspace.workspaceFolders?.find(f => 
-                        indexUri.toString().includes(f.uri.toString()) || 
-                        (index.workspace && index.workspace.rootPath === f.uri.fsPath)
-                    );
-                    if (workspaceFolder) {
-                        const root = vscode.Uri.joinPath(indexUri, '..');
-                        await this.registerWorkspace(root, workspaceFolder, index);
-                    }
-                }
+    /**
+     * Writes an index, serialized against the other index writes.
+     *
+     * A failed write used to be logged and swallowed, which is how an index can
+     * end up describing history that is no longer there: `prune()` deleted the
+     * blobs, the index write that was meant to drop those entries never landed,
+     * and nothing said so. The failure is now reported to the user and rethrown,
+     * so callers that are about to delete content can stop.
+     */
+    private async saveIndex(index: HistoryIndex, indexUri: vscode.Uri): Promise<void> {
+        const task = this.saveQueue.then(() => this.writeIndex(index, indexUri));
+        // The queue exists only to serialize writes. It must not be left in a
+        // rejected state, or every later save would fail on an error that has
+        // already been reported and handled.
+        this.saveQueue = task.catch(() => {});
+        return task;
+    }
 
-                const data = new TextEncoder().encode(JSON.stringify(index, null, 2));
-                await vscode.workspace.fs.writeFile(indexUri, data);
-            } catch (e) {
-                this.log(`Index save failed: ${e}`);
+    private async writeIndex(index: HistoryIndex, indexUri: vscode.Uri): Promise<void> {
+        try {
+            // Update activity timestamp before saving
+            if (index.workspace) {
+                index.workspace.lastActivity = Date.now();
+
+                // Re-register to update the global workspaces.json
+                const workspaceFolder = vscode.workspace.workspaceFolders?.find(f =>
+                    indexUri.toString().includes(f.uri.toString()) ||
+                    (index.workspace && index.workspace.rootPath === f.uri.fsPath)
+                );
+                if (workspaceFolder) {
+                    const root = vscode.Uri.joinPath(indexUri, '..');
+                    await this.registerWorkspace(root, workspaceFolder, index);
+                }
             }
-        });
-        return this.saveQueue;
+
+            const data = new TextEncoder().encode(JSON.stringify(index, null, 2));
+            await vscode.workspace.fs.writeFile(indexUri, data);
+        } catch (e) {
+            const reason = e instanceof Error ? e.message : String(e);
+            this.log(`Index save failed: ${indexUri.toString()} — ${reason}`);
+            vscode.window.showErrorMessage(
+                `Chronos: the history index at ${indexUri.fsPath} could not be written (${reason}), so the last change was not recorded.`
+            );
+            throw e;
+        }
     }
 
     async createLabel(name: string, description?: string, document?: vscode.TextDocument, fileUri?: vscode.Uri) {
@@ -871,6 +891,25 @@ export class HistoryStorage {
             }
 
             if (toDelete.length > 0) {
+                // The index is written first, on purpose. The two orders fail
+                // very differently: deleting the blobs first and losing the
+                // index write leaves entries describing content that is gone —
+                // exactly the broken history this has produced before — while
+                // this order leaves at worst a few unreferenced blobs, which
+                // cost space and nothing else.
+                const previous = index.snapshots;
+                index.snapshots = kept;
+                const indexUri = vscode.Uri.parse(key);
+                try {
+                    await this.saveIndex(index, indexUri);
+                } catch (e) {
+                    // The pruned index never reached disk, so those snapshots
+                    // are still history. Put them back and delete nothing.
+                    index.snapshots = previous;
+                    this.log(`Prune aborted for ${key}: the index could not be written, so no content was deleted.`);
+                    continue;
+                }
+
                 for (const s of toDelete) {
                     if (s.storagePath) {
                         try {
@@ -879,10 +918,6 @@ export class HistoryStorage {
                         } catch (e) {}
                     }
                 }
-
-                index.snapshots = kept;
-                const indexUri = vscode.Uri.parse(key);
-                await this.saveIndex(index, indexUri);
             }
         }
     }

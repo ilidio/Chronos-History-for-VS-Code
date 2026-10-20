@@ -88,6 +88,12 @@ rules hold:
 - **Missing content is a read-time judgement, never a record.** `getHistoryForFile`
   annotates entries with a transient `contentMissing`; it is never written to
   `index.json`, because the content may be a remount away.
+- **Write the index before deleting content, and never swallow a failed index
+  write.** `saveIndex()` reports the failure to the user and rethrows; `prune()`
+  writes the pruned index first and deletes blobs only once it has landed, so a
+  failed write leaves unreferenced blobs (cheap) rather than entries pointing at
+  content that is gone (lost history). The write queue must not be left rejected,
+  or every later save fails on an error already handled.
 - **Changing the storage root copies, it never moves.** `migrateStorage()` verifies
   every file it writes, skips files already at the destination, and leaves the
   source untouched. Both entry points must warn: the `chronos.useSharedStorage`

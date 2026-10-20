@@ -18,6 +18,10 @@
 //      were openable, with no way to see how many were broken or clear them.
 //   6. Changing the storage root moved nothing and warned about nothing, so all
 //      history recorded under the old root silently stopped being found.
+//   7. prune() deleted the blobs before writing the index, and a failed index
+//      write was logged and swallowed: the entries stayed, their content was
+//      gone, and nothing said so. This is what produced 21 broken entries in a
+//      real store, all of them past the retention cutoff.
 
 const Module = require('module');
 const originalRequire = Module.prototype.require;
@@ -457,6 +461,110 @@ async function testStorageRootChangeKeepsHistory() {
         `Entries copied without content: ${JSON.stringify(missing)}`);
 }
 
+
+// --- Test 9: a failed index write during pruning must not delete content ---
+async function testPruneWritesIndexBeforeDeletingBlobs() {
+    console.log('\n[Test 9] Pruning deletes no content when the index cannot be written');
+    const s = await freshStorage();
+    const sixtyDaysAgo = Date.now() - 60 * 24 * 60 * 60 * 1000;
+
+    await s.writeIndex({
+        snapshots: [
+            { id: 'old-1', timestamp: sixtyDaysAgo, filePath: 'src/cart.js', eventType: 'save', storagePath: 'old-1' },
+            { id: 'old-2', timestamp: sixtyDaysAgo - 1000, filePath: 'src/cart.js', eventType: 'save', storagePath: 'old-2' }
+        ]
+    });
+    await s.writeBlob('old-1', 'version one');
+    await s.writeBlob('old-2', 'version two');
+
+    // The index write fails the way a locked or read-only file does. The blobs
+    // must survive: an index that still lists them is the only record of them.
+    const realWriteFile = mockVscode.workspace.fs.writeFile;
+    const errors = [];
+    const realShowError = mockVscode.window.showErrorMessage;
+    mockVscode.window.showErrorMessage = (msg) => { errors.push(msg); };
+    mockVscode.workspace.fs.writeFile = async (uri, content) => {
+        if (uri.toString() === s.indexUri.toString()) {
+            const err = new Error('EACCES: permission denied');
+            err.code = 'NoPermissions';
+            throw err;
+        }
+        return realWriteFile(uri, content);
+    };
+
+    try {
+        await s.storage.prune(30, 500);
+    } catch (e) {
+        // prune() is called fire-and-forget in the manager; whether it rejects
+        // is not the point. What must not happen is content being deleted.
+    } finally {
+        mockVscode.workspace.fs.writeFile = realWriteFile;
+        mockVscode.window.showErrorMessage = realShowError;
+    }
+
+    check(s.blobExists('old-1') && s.blobExists('old-2'),
+        'No snapshot content was deleted after the index write failed.',
+        'Content was deleted even though the pruned index never reached disk.');
+    check((await s.readIndex()).snapshots.length === 2,
+        'The index on disk still lists both snapshots.',
+        'The index on disk no longer matches the content that is there.');
+    check(errors.some(m => m.includes('could not be written')),
+        'The failed index write was reported to the user.',
+        `The index write failed silently. Messages seen: ${JSON.stringify(errors)}`);
+
+    // The in-memory index must not be left pruned either, or the next write
+    // would commit a deletion the user was never told about.
+    const stillListed = (await s.storage.getProjectHistory(false)).map(x => x.id);
+    check(stillListed.includes('old-1') && stillListed.includes('old-2'),
+        'Both snapshots are still listed in memory.',
+        `The cached index was left pruned: ${JSON.stringify(stillListed)}`);
+
+    // And once the disk is writable again, pruning completes properly.
+    await s.storage.prune(30, 500);
+    check(!s.blobExists('old-1') && !s.blobExists('old-2') && (await s.readIndex()).snapshots.length === 0,
+        'A later prune, with a writable index, removed both entries and their content.',
+        'Pruning did not recover after the earlier failure.');
+}
+
+// --- Test 10: one failed write must not poison every later save ---
+async function testSaveQueueRecoversFromAWriteFailure() {
+    console.log('\n[Test 10] A failed index write does not block later saves');
+    const s = await freshStorage();
+    await s.writeIndex({ snapshots: [] });
+
+    const doc = {
+        uri: mockVscode.Uri.file('/workspace/src/app.ts'),
+        fileName: '/workspace/src/app.ts',
+        getText: () => 'first version'
+    };
+
+    const realWriteFile = mockVscode.workspace.fs.writeFile;
+    const realShowError = mockVscode.window.showErrorMessage;
+    mockVscode.window.showErrorMessage = () => {};
+    mockVscode.workspace.fs.writeFile = async (uri, content) => {
+        if (uri.toString() === s.indexUri.toString()) throw new Error('EACCES: permission denied');
+        return realWriteFile(uri, content);
+    };
+    let failed = false;
+    try {
+        await s.storage.saveSnapshot(doc, 'save');
+    } catch (e) {
+        failed = true;
+    }
+    mockVscode.workspace.fs.writeFile = realWriteFile;
+    mockVscode.window.showErrorMessage = realShowError;
+
+    check(failed, 'The save surfaced the index write failure.', 'The save reported success although the index was never written.');
+
+    // The write queue is only there to serialize writes; a rejection left on it
+    // would make every later save fail on an error already reported.
+    await s.storage.saveSnapshot({ ...doc, getText: () => 'second version' }, 'save');
+    const recorded = (await s.readIndex()).snapshots;
+    check(recorded.length >= 1,
+        'The next save was recorded once the index was writable again.',
+        'Later saves were blocked by the earlier failure.');
+}
+
 async function run() {
     console.log('\n--- Chronos History-Loss Regression Tests ---');
     await testSizePruneKeepsPinned();
@@ -467,6 +575,8 @@ async function run() {
     await testOrphanCleanupPreservesGoodEntries();
     await testOrphanCleanupIsScopedToThisProject();
     await testStorageRootChangeKeepsHistory();
+    await testPruneWritesIndexBeforeDeletingBlobs();
+    await testSaveQueueRecoversFromAWriteFailure();
 
     if (failures > 0) {
         console.error(`\n❌ History-loss regression tests FAILED (${failures} check(s)).`);
