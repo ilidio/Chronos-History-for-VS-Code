@@ -43,7 +43,7 @@ export class HistoryPanelProvider implements vscode.WebviewViewProvider {
                             if (message.compareWithCurrent) {
                                 vscode.commands.executeCommand('_chronos.openDiffGitCurrent', message.commit, message.baseFilePath, message.currentSelection);
                             } else {
-                                vscode.commands.executeCommand('_chronos.openDiffGit', message.commit, message.baseFilePath);
+                                vscode.commands.executeCommand('_chronos.openDiffGit', message.commit, message.baseFilePath, message.currentSelection);
                             }
                         }
                         return;
@@ -68,7 +68,7 @@ export class HistoryPanelProvider implements vscode.WebviewViewProvider {
                         if (message.compareWithCurrent) {
                             vscode.commands.executeCommand('_chronos.openDiffGitCurrent', message.commit, message.baseFilePath, message.currentSelection);
                         } else {
-                            vscode.commands.executeCommand('_chronos.openDiffGit', message.commit, message.baseFilePath);
+                            vscode.commands.executeCommand('_chronos.openDiffGit', message.commit, message.baseFilePath, message.currentSelection);
                         }
                     }
                 }
@@ -101,7 +101,7 @@ export class HistoryPanelProvider implements vscode.WebviewViewProvider {
                 else if (message.params.type === 'commitWithBranch') vscode.commands.executeCommand('chronos.compareCommitWithBranch', message.params.commit, message.params.branch, message.params.filePath);
                 else if (message.params.type === 'commit') {
                     if (message.params.compareWithCurrent) vscode.commands.executeCommand('_chronos.openDiffGitCurrent', message.params.commit, message.params.filePath, message.params.selection);
-                    else vscode.commands.executeCommand('_chronos.openDiffGit', message.params.commit, message.params.filePath);
+                    else vscode.commands.executeCommand('_chronos.openDiffGit', message.params.commit, message.params.filePath, message.params.selection);
                 }
             } else if (message.command === 'updateLayout') {
                 vscode.workspace.getConfiguration('chronos').update('diff.htmlPreviewLayout', message.layout, vscode.ConfigurationTarget.Global);
@@ -163,6 +163,7 @@ export class HistoryPanelProvider implements vscode.WebviewViewProvider {
             .diff-line.added { background-color: var(--vscode-diffEditor-insertedTextBackground); }
             .diff-line.removed { background-color: var(--vscode-diffEditor-removedTextBackground); }
             .diff-line.empty { background-color: var(--vscode-editor-background); opacity: 0.3; }
+            .diff-line.diff-target { outline: 1px solid var(--vscode-focusBorder); outline-offset: -1px; }
             .diff-line.header { background-color: var(--vscode-editor-lineHighlightBackground); font-weight: bold; opacity: 0.8; font-size: 0.85em; }
             .btn-action { background: var(--vscode-button-background); color: var(--vscode-button-foreground); border: none; padding: 0 8px; height: 28px; cursor: pointer; border-radius: 2px; display: flex; align-items: center; justify-content: center; font-size: 0.85em; }
             .btn-action.active { background: var(--vscode-textLink-foreground); }
@@ -254,9 +255,10 @@ export class HistoryPanelProvider implements vscode.WebviewViewProvider {
                             if (match) { leftLine = parseInt(match[1]) - 1; rightLine = parseInt(match[2]) - 1; }
                         }
                         else { leftLine++; rightLine++; }
-                        html += '<tr class="diff-line ' + cls + '"><td class="diff-line-num">' + (cls === "added" ? "" : leftLine) + '</td><td class="diff-line-num">' + (cls === "removed" ? "" : rightLine) + '</td><td class="diff-line-content">' + escapeHtml(line) + '</td></tr>';
+                        html += '<tr class="diff-line ' + cls + '"' + (cls === "header" ? "" : ' data-new-line="' + rightLine + '"') + '><td class="diff-line-num">' + (cls === "added" ? "" : leftLine) + '</td><td class="diff-line-num">' + (cls === "removed" ? "" : rightLine) + '</td><td class="diff-line-content">' + escapeHtml(line) + '</td></tr>';
                     });
                     content.innerHTML = html + '</table>';
+                    revealDiffTarget(content, params);
                 } else {
                     let leftHtml = '', rightHtml = ''; let leftLine = 0, rightLine = 0;
                     lines.forEach(line => {
@@ -267,15 +269,15 @@ export class HistoryPanelProvider implements vscode.WebviewViewProvider {
                             rightHtml += '<div class="diff-line header"><div class="diff-line-num"></div><div class="diff-line-content">' + escapeHtml(line) + '</div></div>';
                         } else if (line.startsWith('-')) {
                             leftLine++; leftHtml += '<div class="diff-line removed"><div class="diff-line-num">' + leftLine + '</div><div class="diff-line-content">' + escapeHtml(line.substring(1)) + '</div></div>';
-                            rightHtml += '<div class="diff-line empty"><div class="diff-line-num"></div><div class="diff-line-content"></div></div>';
+                            rightHtml += '<div class="diff-line empty" data-new-line="' + rightLine + '"><div class="diff-line-num"></div><div class="diff-line-content"></div></div>';
                         } else if (line.startsWith('+')) {
-                            rightLine++; rightHtml += '<div class="diff-line added"><div class="diff-line-num">' + rightLine + '</div><div class="diff-line-content">' + escapeHtml(line.substring(1)) + '</div></div>';
+                            rightLine++; rightHtml += '<div class="diff-line added" data-new-line="' + rightLine + '"><div class="diff-line-num">' + rightLine + '</div><div class="diff-line-content">' + escapeHtml(line.substring(1)) + '</div></div>';
                             leftHtml += '<div class="diff-line empty"><div class="diff-line-num"></div><div class="diff-line-content"></div></div>';
                         } else {
                             leftLine++; rightLine++;
                             const text = line.startsWith(' ') ? line.substring(1) : line;
                             leftHtml += '<div class="diff-line"><div class="diff-line-num">' + leftLine + '</div><div class="diff-line-content">' + escapeHtml(text) + '</div></div>';
-                            rightHtml += '<div class="diff-line"><div class="diff-line-num">' + rightLine + '</div><div class="diff-line-content">' + escapeHtml(text) + '</div></div>';
+                            rightHtml += '<div class="diff-line" data-new-line="' + rightLine + '"><div class="diff-line-num">' + rightLine + '</div><div class="diff-line-content">' + escapeHtml(text) + '</div></div>';
                         }
                     });
                     let leftHeader = '<div class="diff-sbs-title">Original</div>';
@@ -285,9 +287,51 @@ export class HistoryPanelProvider implements vscode.WebviewViewProvider {
                     if (l && r) {
                         l.onscroll = () => { if (!isSyncScroll) return; r.scrollTop = l.scrollTop; r.scrollLeft = l.scrollLeft; };
                         r.onscroll = () => { if (!isSyncScroll) return; l.scrollTop = r.scrollTop; l.scrollLeft = r.scrollLeft; };
+                        revealDiffTarget(r, params, l);
                     }
                 }
             }
+            /**
+             * Picks the range this diff is about and scrolls it into view.
+             *
+             * A snapshot's or a commit's own relevantRange is in the same line
+             * numbers as the right-hand side of its diff, so it is preferred over
+             * the editor selection, which describes the file on disk. With no
+             * range at all, the first changed line is still a better place to
+             * land than the top of the file.
+             */
+            function diffTargetRange(params) {
+                if (!params) return null;
+                const own = (params.snapshot && params.snapshot.relevantRange)
+                    || (params.commit && params.commit.relevantRange);
+                if (own && typeof own.start === 'number') return { startLine: own.start, endLine: own.end };
+
+                const sel = params.selection;
+                if (sel && typeof sel.startLine === 'number') return { startLine: sel.startLine, endLine: sel.endLine };
+                if (sel && sel.start && typeof sel.start.line === 'number') return { startLine: sel.start.line, endLine: sel.end.line };
+                return null;
+            }
+
+            function revealDiffTarget(scroller, params, mirror) {
+                if (!scroller) return;
+                let row = null;
+                const target = diffTargetRange(params);
+
+                if (target) {
+                    const rows = scroller.querySelectorAll('[data-new-line]');
+                    for (let i = 0; i < rows.length; i++) {
+                        if (parseInt(rows[i].getAttribute('data-new-line'), 10) >= target.startLine + 1) { row = rows[i]; break; }
+                    }
+                }
+                if (!row) row = scroller.querySelector('.added, .removed');
+                if (!row) return;
+
+                row.classList.add('diff-target');
+                row.scrollIntoView({ block: 'center' });
+                // The panes mirror each other only while sync scrolling is on.
+                if (mirror && !isSyncScroll) mirror.scrollTop = scroller.scrollTop;
+            }
+
             function escapeHtml(unsafe) { if (!unsafe) return ""; return String(unsafe).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#039;"); }
         `;
 

@@ -208,6 +208,25 @@ async function runGitIntegrationTests() {
             'the commit that only touched line 8 is left out'
         );
 
+        console.log('\n[Test 11] Every real commit carries its own usable range');
+        for (const commit of history.commits) {
+            const range = commit.relevantRange;
+            assert(!!range, `${commit.hash.substring(0, 7)} carries a range`);
+            if (!range) continue;
+
+            // The traced line is index 2, so every hunk must cover it...
+            assert(
+                range.start <= 2 && 2 <= range.end,
+                `${commit.hash.substring(0, 7)}'s range covers the traced line`
+            );
+            // ...and the range must exist in that commit's own version of the file.
+            const atCommit = git(repo, ['show', `${commit.hash}:tracked.ts`]).split('\n');
+            assert(
+                atCommit[range.start] !== undefined,
+                `${commit.hash.substring(0, 7)}'s range is inside that version of the file`
+            );
+        }
+
         console.log('\n[Test 4] The -n limit is honoured by real git');
         history = await gitService.getHistoryForSelection(tracked, 2, 2, { ...CONFIG, maxCommits: 2 });
         assertEqual(history.commits.length, 2, 'only the requested number of commits comes back');

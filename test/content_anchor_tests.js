@@ -335,13 +335,15 @@ async function runContentAnchorTests() {
     );
     assertEqual(labelled[2].anchoringLabel, undefined, 'a snapshot with no range is left alone');
 
-    console.log('\n[Test 13] Both views render the label');
+    console.log('\n[Test 13] Both views render the label and scroll to the range');
     const fs = require('fs');
     for (const view of ['historyPanelProvider', 'historyWebview']) {
         // The rows are built in browser JS inside an HTML string, so from Node
         // the only way to check the wiring is to look for it in the output.
         const source = fs.readFileSync(require.resolve(`../out/views/${view}.js`), 'utf8');
         assert(source.includes('anchoringLabel'), `${view} renders the anchoring label`);
+        assert(source.includes('revealDiffTarget'), `${view} scrolls its diff to the target range`);
+        assert(source.includes('data-new-line'), `${view} tags diff rows with their line number`);
     }
 
     // ─── Summary ─────────────────────────────────────────────────────────────

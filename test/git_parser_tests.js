@@ -10,6 +10,8 @@ Module.prototype.require = function(request) {
 
 const { GitService } = require('../out/git/gitService');
 
+let rangeFailures = 0;
+
 async function runGitParserTests() {
     console.log('\n--- Chronos Git Parser Unit Tests ---');
     const git = new GitService();
@@ -36,6 +38,52 @@ async function runGitParserTests() {
         testChurn(" 1 file changed, 5 insertions(+), 3 deletions(-)", 5, 3);
         testChurn(" 2 files changed, 1 insertion(+)", 1, 0);
         testChurn(" 1 file changed, 10 deletions(-)", 0, 10);
+
+        // --- Test 3: git log -L per-commit range ---
+        // `git log -L` prints one hunk header per commit, and those numbers are
+        // the only ones that apply inside that version of the file.
+        console.log('\n[Test 3] git log -L per-commit range');
+        const logLOutput = [
+            'commit aaaa1111',
+            'Author: Me',
+            'Date: 2024-01-01',
+            '    touch the block',
+            'diff --git a/file.ts b/file.ts',
+            '--- a/file.ts',
+            '+++ b/file.ts',
+            '@@ -41,5 +41,6 @@',
+            ' context',
+            '+added',
+            'commit bbbb2222',
+            'Author: Me',
+            'Date: 2023-12-01',
+            '    earlier',
+            'diff --git a/file.ts b/file.ts',
+            '@@ -10,2 +10,2 @@',
+            '-old',
+            '+new',
+            ''
+        ].join('\n');
+
+        const parsed = git.parseGitLogL(logLOutput, 10);
+        const expectRange = (commit, start, end, label) => {
+            const r = commit && commit.relevantRange;
+            if (r && r.start === start && r.end === end) {
+                console.log(`✅ ${label} (${start}-${end})`);
+            } else {
+                console.error(`❌ ${label} — expected ${start}-${end}, got ${r ? r.start + '-' + r.end : r}`);
+                rangeFailures++;
+            }
+        };
+
+        if (parsed.length !== 2) {
+            console.error(`❌ Expected 2 commits, got ${parsed.length}`);
+            rangeFailures++;
+        } else {
+            console.log('✅ Both commits parsed.');
+            expectRange(parsed[0], 40, 45, "newest commit's range comes from its own hunk header");
+            expectRange(parsed[1], 9, 10, "older commit's range is independent of it");
+        }
 
         // --- Test 2: Blame Porcelain Parser ---
         console.log('\n[Test 2] Blame Porcelain Parser');
@@ -93,4 +141,9 @@ filename test.ts
     }
 }
 
-runGitParserTests();
+runGitParserTests().then(() => {
+    if (rangeFailures > 0) {
+        console.error(`\n--- ${rangeFailures} git log -L range check(s) failed ---`);
+        process.exit(1);
+    }
+});

@@ -381,13 +381,7 @@ async function openDiff(snapshot: Snapshot, baseFilePath: string, currentSelecti
     if (!fileUri) return;
 
     const fileName = path.basename(fileUri.fsPath);
-    const ext = path.extname(fileUri.fsPath) || '.txt';
     const timestamp = new Date(snapshot.timestamp).toLocaleString();
-    const config = vscode.workspace.getConfiguration('chronos');
-    const diffOptions = { 
-        viewColumn: vscode.ViewColumn.Active, 
-        preview: true
-    };
 
     // Normalize currentSelection: handle both { startLine, endLine } (from webview)
     // and raw vscode.Selection serialized as { start: { line }, end: { line } } (from panel).
@@ -400,61 +394,56 @@ async function openDiff(snapshot: Snapshot, baseFilePath: string, currentSelecti
         }
     }
 
-    if (!snapshot.relevantRange && !normalizedSelection) {
-         try {
-            const snapshotUri = await storage.getSnapshotUri(snapshot, fileUri);
-            const title = `${fileName} (${timestamp}) ↔ ${fileName} (Current)`;
-            await vscode.commands.executeCommand('vscode.diff', snapshotUri, fileUri, title, diffOptions);
-        } catch (e) {
-            vscode.window.showErrorMessage('Failed to open diff: ' + e);
-        }
-        return;
-    }
+    // The right-hand side is the file on disk, so the range the user selected
+    // there is the one to reveal. The snapshot's own range is the fallback for a
+    // click that came from a list nobody filtered.
+    const target = normalizedSelection
+        ? { start: normalizedSelection.startLine, end: normalizedSelection.endLine }
+        : snapshot.relevantRange;
 
     try {
         const snapshotUri = await storage.getSnapshotUri(snapshot, fileUri);
-        const snapshotData = await vscode.workspace.fs.readFile(snapshotUri);
-        const snapshotContent = new TextDecoder().decode(snapshotData);
-        const currentData = await vscode.workspace.fs.readFile(fileUri);
-        const currentContent = new TextDecoder().decode(currentData);
-        const snapRange = snapshot.relevantRange;
-        const currRange = normalizedSelection;
-
-        if (!snapRange && !currRange) {
-             const snapshotUri = await storage.getSnapshotUri(snapshot, fileUri);
-             const title = `${fileName} (${timestamp}) ↔ ${fileName} (Current)`;
-             await vscode.commands.executeCommand('vscode.diff', snapshotUri, fileUri, title, diffOptions);
-             return;
-        }
-
-        // If we have a relevantRange but no explicit currRange (e.g. fallback path),
-        // use the snapRange as an approximation for the current-file side.
-        const effectiveCurrRange = currRange ?? { startLine: snapRange!.start, endLine: snapRange!.end };
-        const effectiveSnapRange = snapRange ?? { start: currRange!.startLine, end: currRange!.endLine };
-
-        const snapLines = snapshotContent.split('\n').slice(effectiveSnapRange.start, effectiveSnapRange.end + 1).join('\n');
-        const currLines = currentContent.split('\n').slice(effectiveCurrRange.startLine, effectiveCurrRange.endLine + 1).join('\n');
-        const snapTemp = await createTempFile(`v_${snapshot.id.substring(0,8)}${ext}`, snapLines);
-        const currTemp = await createTempFile(`current_selection${ext}`, currLines);
-        
-        const title = `${fileName} (${timestamp}) ↔ ${fileName} (Current)`;
-        await vscode.commands.executeCommand('vscode.diff', snapTemp, currTemp, title, diffOptions);
+        const title = `${fileName} (${timestamp}) \u2194 ${fileName} (Current)`;
+        await vscode.commands.executeCommand('vscode.diff', snapshotUri, fileUri, title, showOptions(target));
     } catch (e) {
-        vscode.window.showErrorMessage('Failed to open selection diff: ' + e);
+        vscode.window.showErrorMessage('Failed to open diff: ' + e);
     }
 }
 
-async function openDiffGit(commit: GitCommit, filePath: string) {
+/**
+ * Diff editor options, revealing a line range when there is one to reveal.
+ *
+ * `selection` applies to the modified (right-hand) side; the diff editor keeps
+ * both sides aligned, so the matching region of the left side comes into view
+ * with it. The range stops at the start of its last line, which is enough to
+ * scroll to it without guessing that line's length.
+ */
+function showOptions(target?: { start: number, end: number }): vscode.TextDocumentShowOptions {
+    const options: vscode.TextDocumentShowOptions = {
+        viewColumn: vscode.ViewColumn.Active,
+        preview: true
+    };
+    if (!target) return options;
+
+    const start = Math.max(0, target.start);
+    const end = Math.max(start, target.end);
+    return { ...options, selection: new vscode.Range(start, 0, end, 0) };
+}
+
+async function openDiffGit(commit: GitCommit, filePath: string, selection?: { startLine: number, endLine: number }) {
     if (!commit) return;
     const workspaceFolder = vscode.workspace.getWorkspaceFolder(vscode.Uri.file(filePath));
     if (!workspaceFolder) return;
 
     const ext = path.extname(filePath) || '.txt';
     const fileName = path.basename(filePath);
-    const diffOptions = { 
-        viewColumn: vscode.ViewColumn.Active, 
-        preview: true
-    };
+
+    // Both sides are versions of that commit, so the commit's own hunk range is
+    // the only one whose line numbers apply. A range from the editor or from
+    // HEAD would point somewhere else entirely in an old version.
+    const target = commit.relevantRange
+        ?? (selection ? { start: selection.startLine, end: selection.endLine } : undefined);
+    const diffOptions = showOptions(target);
 
     try {
         const canonicalPath = await gitService.getCanonicalPath(filePath, commit.hash);
@@ -482,17 +471,23 @@ async function openDiffGit(commit: GitCommit, filePath: string) {
     }
 }
 
-async function openDiffGitCurrent(commit: GitCommit, filePath: string, selection?: {startLine: number, endLine: number}) {
+async function openDiffGitCurrent(commit: GitCommit, filePath: string, selection?: ViewRange) {
     if (!commit) return;
     const ext = path.extname(filePath) || '.txt';
     const fileName = path.basename(filePath);
     const workspaceFolder = vscode.workspace.getWorkspaceFolder(vscode.Uri.file(filePath));
     if (!workspaceFolder) return;
 
-    const diffOptions = { 
-        viewColumn: vscode.ViewColumn.Active, 
-        preview: true
-    };
+    // The right-hand side is the file on disk, including uncommitted edits, so
+    // the range to reveal is the one from the editor buffer — not the HEAD range
+    // that `git log -L` was given.
+    const target = selection
+        ? {
+            start: selection.bufferStartLine ?? selection.startLine,
+            end: selection.bufferEndLine ?? selection.endLine
+        }
+        : undefined;
+    const diffOptions = showOptions(target);
 
     try {
         // 1. Get historical version content
@@ -505,9 +500,6 @@ async function openDiffGitCurrent(commit: GitCommit, filePath: string, selection
         
         // Use vscode.diff with the full file URI to allow editing of the current file
         await vscode.commands.executeCommand('vscode.diff', leftTemp, vscode.Uri.file(filePath), title, diffOptions);
-        
-        // Optional: We could attempt to reveal the selection in the active editor after opening, 
-        // but vscode.diff doesn't provide a direct way to do that for both sides reliably.
     } catch (e) {
         vscode.window.showErrorMessage('Failed to open diff with current: ' + e);
     }
@@ -892,7 +884,8 @@ async function showGitHistoryForRange(editor: vscode.TextEditor, startLine: numb
     const filePath = editor.document.uri.fsPath;
     // Line numbers from the editor describe the buffer, but `git log -L` resolves
     // them against HEAD, so uncommitted edits above the range would shift it.
-    const range = await mapRangeToHead(filePath, { startLine, endLine });
+    const headRange = await mapRangeToHead(filePath, { startLine, endLine });
+    const range: ViewRange = { ...headRange, bufferStartLine: startLine, bufferEndLine: endLine };
     try {
         const history = await gitService.getHistoryForSelection(filePath, range.startLine, range.endLine, GIT_HISTORY_CONFIG);
 
@@ -923,7 +916,7 @@ async function showGitHistoryForRange(editor: vscode.TextEditor, startLine: numb
     }
 }
 
-function presentGitHistory(commits: GitCommit[], filePath: string, range?: LineRange) {
+function presentGitHistory(commits: GitCommit[], filePath: string, range?: ViewRange) {
     if (vscode.workspace.getConfiguration('chronos').get('viewMode') === 'panel') {
         panelProvider.showGitHistory(commits, filePath, range, aiService.isConfigured());
         vscode.commands.executeCommand('chronos.historyPanel.focus');
@@ -962,6 +955,15 @@ async function traceSymbolHistory(filePath: string, namePath: string): Promise<{
 
 function escapeRegExp(text: string): string {
     return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/**
+ * A line range as the views receive it: HEAD's numbers, which is what git was
+ * asked about, plus the editor's own, which is what applies to the file on disk.
+ */
+interface ViewRange extends LineRange {
+    bufferStartLine: number;
+    bufferEndLine: number;
 }
 
 /**

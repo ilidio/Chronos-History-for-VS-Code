@@ -2,6 +2,7 @@ import * as cp from 'child_process';
 import * as vscode from 'vscode';
 import * as path from 'path';
 import { GitCommit, GitHistoryConfig, GitRangeFailure, GitRangeHistory } from '../types';
+import { hunkNewRange, parseHunks } from '../utils/rangeMapper';
 
 /**
  * Turns git's stderr into something that can be shown to the user. The strings
@@ -25,6 +26,22 @@ export function classifyGitRangeFailure(stderr: string, fileName: string): GitRa
     }
 
     return { reason: 'unknown', message: `Git could not read the line history for ${fileName}.`, detail };
+}
+
+/**
+ * Records where a commit's own change sits, in that commit's line numbers.
+ *
+ * `git log -L` prints a hunk header per commit, and those numbers are the only
+ * ones that mean anything inside that version of the file — a range taken from
+ * HEAD, or from the editor, does not apply to a commit from last year. Without
+ * this, anything wanting to reveal the change has nothing accurate to aim at.
+ */
+function withCommitRange(commit: GitCommit): GitCommit {
+    const hunks = parseHunks(commit.diff);
+    if (hunks.length === 0) return commit;
+
+    const range = hunkNewRange(hunks[0]);
+    return { ...commit, relevantRange: { start: range.startLine, end: range.endLine } };
 }
 
 export class GitService {
@@ -528,7 +545,7 @@ export class GitService {
         for (const line of lines) {
             if (line.startsWith('commit ')) {
                 if (currentCommit) {
-                    commits.push(currentCommit);
+                    commits.push(withCommitRange(currentCommit));
                     if (commits.length >= maxCommits) {
                         return commits;
                     }
@@ -558,7 +575,7 @@ export class GitService {
             }
         }
         if (currentCommit && commits.length < maxCommits) {
-            commits.push(currentCommit);
+            commits.push(withCommitRange(currentCommit));
         }
         
         return commits;

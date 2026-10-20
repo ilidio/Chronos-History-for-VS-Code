@@ -40,6 +40,18 @@ function oldSideStart(hunk: DiffHunk): number {
     return hunk.oldLines === 0 ? hunk.oldStart : hunk.oldStart - 1;
 }
 
+/**
+ * The lines a hunk occupies on the new side, 0-based and inclusive.
+ *
+ * A hunk with no new lines (a pure deletion) has no content to point at, so the
+ * range collapses onto the seam where the content used to be.
+ */
+export function hunkNewRange(hunk: DiffHunk): LineRange {
+    const start = newSideStart(hunk);
+    if (hunk.newLines === 0) return { startLine: start, endLine: start };
+    return { startLine: start, endLine: start + hunk.newLines - 1 };
+}
+
 export function parseHunks(diff: string): DiffHunk[] {
     const hunks: DiffHunk[] = [];
     if (!diff) return hunks;
