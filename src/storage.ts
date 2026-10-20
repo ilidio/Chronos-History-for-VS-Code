@@ -4,6 +4,23 @@ import * as os from 'os';
 import { v4 as uuidv4 } from 'uuid';
 import { Snapshot, HistoryIndex, ChronosConfig } from './types';
 
+/** Index entries whose blob is gone, grouped per file, for one index. */
+export interface OrphanReport {
+    /** `index.json` URI, as a string — the key `removeOrphanedEntries` acts on. */
+    indexKey: string;
+    rootPath: string;
+    /** True when this index belongs to a project currently open. */
+    own: boolean;
+    files: { filePath: string; snapshots: Snapshot[] }[];
+    total: number;
+}
+
+export interface MigrationResult {
+    copied: number;
+    skipped: number;
+    failed: { path: string; reason: string }[];
+}
+
 export class HistoryStorage {
     private globalStorageRoot: vscode.Uri;
     private indices: Map<string, { index: HistoryIndex, root: vscode.Uri }> = new Map();
@@ -338,8 +355,9 @@ export class HistoryStorage {
         this.log(`getHistoryForFile searching for: ${rawRelPath} (normalized: ${normalizedRelPath})`);
         
         let results: Snapshot[] = [];
+        const rootById = new Map<string, vscode.Uri>();
 
-        for (const [key, { index }] of this.indices.entries()) {
+        for (const [key, { index, root }] of this.indices.entries()) {
             const matches = index.snapshots.filter(s => {
                 const sPath = this.normalizePath(s.filePath);
                 const match = sPath === normalizedRelPath || 
@@ -349,11 +367,36 @@ export class HistoryStorage {
                 if (match) this.log(`Match found in index ${key}: ${s.filePath} (id: ${s.id})`);
                 return match;
             });
+            for (const m of matches) rootById.set(m.id, root);
             results = results.concat(matches);
         }
 
         this.log(`Total history entries found: ${results.length}`);
-        return results.sort((a, b) => b.timestamp - a.timestamp);
+        return this.annotateAvailability(results.sort((a, b) => b.timestamp - a.timestamp), rootById);
+    }
+
+    /**
+     * Flags entries whose stored content is gone, so callers can present them
+     * as unavailable instead of offering a diff that cannot open.
+     *
+     * The flag is computed per call and never written to the index: an entry
+     * may be missing only because the storage root moved or a drive is not
+     * mounted, and persisting that judgement would turn a temporary condition
+     * into a permanent record. Removing such entries for good is a separate,
+     * confirmed action — see `findOrphanedEntries` / `removeOrphanedEntries`.
+     */
+    private async annotateAvailability(snapshots: Snapshot[], rootById: Map<string, vscode.Uri>): Promise<Snapshot[]> {
+        const annotated: Snapshot[] = [];
+        for (const s of snapshots) {
+            const root = rootById.get(s.id);
+            if (!root || !s.storagePath) {
+                annotated.push(s);
+                continue;
+            }
+            const missing = await this.isContentMissing(root, s);
+            annotated.push(missing ? { ...s, contentMissing: true } : s);
+        }
+        return annotated;
     }
 
     private async refreshIndices(force: boolean = false): Promise<void> {
@@ -398,6 +441,206 @@ export class HistoryStorage {
         }
     }
 
+    /** The root every project's history lives under, as currently resolved. */
+    public getGlobalRoot(): vscode.Uri {
+        return this.globalStorageRoot;
+    }
+
+    /**
+     * Index entries that point at content which is no longer on disk.
+     *
+     * The index and the blobs are two separate things, and only the index is
+     * rewritten on every save: a storage root that moved under it, an
+     * interrupted write or a manual cleanup leaves entries that the UI offers
+     * as if they were openable. Entries without a `storagePath` (labels) hold
+     * no content by design and are never orphans.
+     */
+    public async findOrphanedEntries(): Promise<OrphanReport[]> {
+        await this.init();
+        await this.refreshIndices(true);
+        const ownKeys = await this.getOwnIndexKeys();
+        const reports: OrphanReport[] = [];
+
+        for (const [key, { index, root }] of this.indices) {
+            const byFile = new Map<string, Snapshot[]>();
+            let total = 0;
+            for (const s of index.snapshots) {
+                if (!(await this.isContentMissing(root, s))) continue;
+                const list = byFile.get(s.filePath) ?? [];
+                list.push(s);
+                byFile.set(s.filePath, list);
+                total++;
+            }
+            if (total === 0) continue;
+            reports.push({
+                indexKey: key,
+                rootPath: root.fsPath,
+                own: ownKeys.has(key),
+                total,
+                files: [...byFile.entries()]
+                    .map(([filePath, snapshots]) => ({
+                        filePath,
+                        snapshots: snapshots.sort((a, b) => b.timestamp - a.timestamp)
+                    }))
+                    .sort((a, b) => b.snapshots.length - a.snapshots.length)
+            });
+        }
+        return reports;
+    }
+
+    /** True when the snapshot claims stored content that is not there. */
+    private async isContentMissing(root: vscode.Uri, snapshot: Snapshot): Promise<boolean> {
+        if (!snapshot.storagePath) return false;
+        return !(await this.exists(vscode.Uri.joinPath(root, snapshot.storagePath)));
+    }
+
+    /**
+     * Drops the entries listed in `reports` from their indices.
+     *
+     * This deletes the user's history, so the caller is the one that confirms
+     * it. Only the ids given are removed, and each is re-checked against disk
+     * first: an entry whose blob is present is never dropped, however it was
+     * reported. Other projects sharing the global store are left alone unless
+     * their report is passed in explicitly.
+     */
+    public async removeOrphanedEntries(reports: OrphanReport[]): Promise<{ removed: number; keptWithContent: number }> {
+        await this.init();
+        let removed = 0;
+        let keptWithContent = 0;
+
+        for (const report of reports) {
+            const entry = this.indices.get(report.indexKey);
+            if (!entry) continue;
+            const { index, root } = entry;
+
+            const requested = new Set<string>();
+            for (const file of report.files) {
+                for (const s of file.snapshots) requested.add(s.id);
+            }
+
+            const kept: Snapshot[] = [];
+            for (const s of index.snapshots) {
+                if (!requested.has(s.id)) {
+                    kept.push(s);
+                    continue;
+                }
+                if (await this.isContentMissing(root, s)) {
+                    removed++;
+                } else {
+                    // The blob reappeared between the report and the
+                    // confirmation. It is real history; keep it.
+                    kept.push(s);
+                    keptWithContent++;
+                }
+            }
+
+            if (removed > 0 || keptWithContent > 0) {
+                index.snapshots = kept;
+                await this.saveIndex(index, vscode.Uri.parse(report.indexKey));
+            }
+        }
+
+        this.log(`Removed ${removed} orphaned index entries (kept ${keptWithContent} whose content was present).`);
+        return { removed, keptWithContent };
+    }
+
+    /** Total snapshots recorded under a storage root, across every project in it. */
+    public async countSnapshotsUnder(root: vscode.Uri): Promise<number> {
+        let total = 0;
+        for (const indexUri of await this.findIndexFiles(root)) {
+            try {
+                const parsed = this.parseIndex(await vscode.workspace.fs.readFile(indexUri));
+                if (parsed) total += parsed.snapshots.length;
+            } catch (e) {
+                // Unreadable index: it is not ours to repair here.
+            }
+        }
+        return total;
+    }
+
+    /** `index.json` files directly under `root` or one level down (per project). */
+    private async findIndexFiles(root: vscode.Uri): Promise<vscode.Uri[]> {
+        const found: vscode.Uri[] = [];
+        const rootIndex = vscode.Uri.joinPath(root, 'index.json');
+        if (await this.exists(rootIndex)) found.push(rootIndex);
+
+        let children: [string, vscode.FileType][] = [];
+        try {
+            children = await vscode.workspace.fs.readDirectory(root);
+        } catch (e) {
+            return found;
+        }
+        for (const [name, type] of children) {
+            if (type !== vscode.FileType.Directory) continue;
+            const childIndex = vscode.Uri.joinPath(root, name, 'index.json');
+            if (await this.exists(childIndex)) found.push(childIndex);
+        }
+        return found;
+    }
+
+    /**
+     * Copies a storage root to a new location, leaving the source untouched.
+     *
+     * Switching `customStoragePath` does not move anything: the old history
+     * simply stops being found. Copying first and verifying every byte written
+     * means a failed migration costs nothing — the original is still the only
+     * authority, and the caller can leave the setting alone. Files already
+     * present at the destination are skipped rather than overwritten.
+     */
+    public async migrateStorage(from: vscode.Uri, to: vscode.Uri): Promise<MigrationResult> {
+        const result: MigrationResult = { copied: 0, skipped: 0, failed: [] };
+        if (from.toString() === to.toString()) return result;
+        await this.copyTree(from, to, result);
+        this.log(`Migration ${from.fsPath} -> ${to.fsPath}: ${result.copied} copied, ${result.skipped} skipped, ${result.failed.length} failed.`);
+        return result;
+    }
+
+    private async copyTree(from: vscode.Uri, to: vscode.Uri, result: MigrationResult): Promise<void> {
+        let children: [string, vscode.FileType][];
+        try {
+            children = await vscode.workspace.fs.readDirectory(from);
+        } catch (e) {
+            result.failed.push({ path: from.fsPath, reason: String(e) });
+            return;
+        }
+
+        try {
+            await vscode.workspace.fs.createDirectory(to);
+        } catch (e) {
+            result.failed.push({ path: to.fsPath, reason: String(e) });
+            return;
+        }
+
+        for (const [name, type] of children) {
+            const src = vscode.Uri.joinPath(from, name);
+            const dst = vscode.Uri.joinPath(to, name);
+
+            if (type === vscode.FileType.Directory) {
+                await this.copyTree(src, dst, result);
+                continue;
+            }
+            if (type !== vscode.FileType.File) continue;
+
+            if (await this.exists(dst)) {
+                // Never overwrite history that is already at the destination.
+                result.skipped++;
+                continue;
+            }
+
+            try {
+                const data = await vscode.workspace.fs.readFile(src);
+                await vscode.workspace.fs.writeFile(dst, data);
+                const written = await vscode.workspace.fs.readFile(dst);
+                if (written.length !== data.length) {
+                    throw new Error(`copy verification failed (${data.length} bytes in, ${written.length} out)`);
+                }
+                result.copied++;
+            } catch (e) {
+                result.failed.push({ path: src.fsPath, reason: e instanceof Error ? e.message : String(e) });
+            }
+        }
+    }
+
     public async runDiagnostics(): Promise<string> {
         await this.init();
         await this.refreshIndices(true);
@@ -417,6 +660,9 @@ export class HistoryStorage {
             out += `No active editor found.\n\n`;
         }
 
+        const orphans = await this.findOrphanedEntries();
+        const orphansByIndex = new Map(orphans.map(r => [r.indexKey, r]));
+
         for (const [key, { index, root }] of this.indices.entries()) {
             out += `Index: ${key}\n`;
             out += `Root: ${root.fsPath}\n`;
@@ -425,7 +671,25 @@ export class HistoryStorage {
                 const last = index.snapshots[index.snapshots.length - 1];
                 out += `Last Snapshot: ${last.filePath} (Normalized: ${this.normalizePath(last.filePath)}) at ${new Date(last.timestamp).toLocaleString()}\n`;
             }
+
+            const report = orphansByIndex.get(key);
+            if (!report) {
+                out += `Orphaned Entries: 0\n`;
+            } else {
+                out += `Orphaned Entries: ${report.total} (listed in the index, content missing from disk)\n`;
+                for (const file of report.files) {
+                    const newest = new Date(file.snapshots[0].timestamp).toLocaleString();
+                    out += `  - ${file.filePath}: ${file.snapshots.length} (newest ${newest})\n`;
+                }
+            }
             out += `----------------------------\n`;
+        }
+
+        const totalOrphans = orphans.reduce((n, r) => n + r.total, 0);
+        if (totalOrphans > 0) {
+            out += `\n${totalOrphans} orphaned entr${totalOrphans === 1 ? 'y' : 'ies'} found.\n`;
+            out += `Run "Chronos: Remove Orphaned History Entries" to clear them from the index.\n`;
+            out += `That only removes entries whose content is already gone; nothing openable is touched.\n`;
         }
         return out;
     }

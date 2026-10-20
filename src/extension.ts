@@ -261,11 +261,37 @@ export function activate(context: vscode.ExtensionContext) {
                 const defaultPath = process.platform === 'win32' 
                     ? path.join(process.env.LOCALAPPDATA || path.join(home, 'AppData', 'Local'), '.chronos-history')
                     : path.join(home, '.chronos-history');
-                    
+
+                const oldRoot = storage.getGlobalRoot();
+                const newRoot = vscode.Uri.file(defaultPath);
+
+                if (oldRoot.toString() === newRoot.toString()) {
+                    vscode.window.showInformationMessage(`Chronos: already using ${defaultPath}.`);
+                    return;
+                }
+
+                // Switching the root is not a move: everything recorded under the
+                // old one simply stops being found. Say how much that is and let
+                // the user decide before the setting changes.
+                const leftBehind = await storage.countSnapshotsUnder(oldRoot);
+                if (leftBehind > 0) {
+                    const choice = await vscode.window.showWarningMessage(
+                        `Chronos: ${leftBehind} snapshot${leftBehind === 1 ? '' : 's'} are stored at ${oldRoot.fsPath}. Switching to ${defaultPath} will not move them, so that history will no longer be listed.`,
+                        { modal: true },
+                        'Copy History Across',
+                        'Switch Without Copying'
+                    );
+                    if (!choice) return;
+                    if (choice === 'Copy History Across' && !(await copyHistoryAcross(oldRoot, newRoot))) {
+                        return;
+                    }
+                }
+
                 const config = vscode.workspace.getConfiguration('chronos');
                 await config.update('customStoragePath', defaultPath, vscode.ConfigurationTarget.Global);
                 vscode.window.showInformationMessage(`Chronos: Global storage path set to ${defaultPath}`);
             }),
+            vscode.commands.registerCommand('chronos.cleanOrphanedHistory', cleanOrphanedHistory),
             vscode.commands.registerCommand('chronos.showLogs', () => outputChannel.show(true)),
             vscode.commands.registerCommand('chronos.runDiagnostics', runDiagnostics),
             vscode.commands.registerCommand('chronos.exportHistory', exportHistory),
@@ -300,10 +326,18 @@ export function activate(context: vscode.ExtensionContext) {
         context.subscriptions.push(
             vscode.workspace.onDidChangeConfiguration(async e => {
                 if (e.affectsConfiguration('chronos.customStoragePath') || e.affectsConfiguration('chronos.saveInProjectFolder')) {
+                    // A path edited by hand in settings never passes through the
+                    // command, so the same "your old history is still over there"
+                    // warning has to happen here too.
+                    const previousRoot = storage.getGlobalRoot();
                     await storage.init();
+                    const currentRoot = storage.getGlobalRoot();
                     outputChannel.appendLine('Storage configuration changed, re-initialized.');
-                    // Refresh indices to ensure we see history from new location
                     activityProvider.refresh();
+
+                    if (previousRoot.toString() !== currentRoot.toString()) {
+                        await offerToCopyHistoryAcross(previousRoot, currentRoot);
+                    }
                 }
             })
         );
@@ -1033,6 +1067,92 @@ async function mapRangeToHead(filePath: string, range: LineRange): Promise<LineR
         console.warn('[Chronos] Could not map the range onto HEAD:', e);
         return range;
     }
+}
+
+/**
+ * Copies a storage root to the new location, reporting what happened.
+ *
+ * Returns false when nothing was copied and the caller should not go ahead
+ * with the switch — a half-migrated store with the setting already changed is
+ * the state that loses history.
+ */
+async function copyHistoryAcross(from: vscode.Uri, to: vscode.Uri): Promise<boolean> {
+    const result = await vscode.window.withProgress(
+        { location: vscode.ProgressLocation.Notification, title: `Chronos: copying history to ${to.fsPath}...` },
+        () => storage.migrateStorage(from, to)
+    );
+
+    if (result.failed.length > 0) {
+        const choice = await vscode.window.showErrorMessage(
+            `Chronos: ${result.failed.length} file${result.failed.length === 1 ? '' : 's'} could not be copied to ${to.fsPath} (first failure: ${result.failed[0].path} — ${result.failed[0].reason}). Nothing was removed from ${from.fsPath}.`,
+            { modal: true },
+            'Switch Anyway'
+        );
+        return choice === 'Switch Anyway';
+    }
+
+    const skipped = result.skipped > 0 ? `, ${result.skipped} already present` : '';
+    vscode.window.showInformationMessage(
+        `Chronos: copied ${result.copied} file${result.copied === 1 ? '' : 's'} to ${to.fsPath}${skipped}. The originals are still at ${from.fsPath}.`
+    );
+    return true;
+}
+
+/** Offers the copy after the fact, for a path changed outside the command. */
+async function offerToCopyHistoryAcross(from: vscode.Uri, to: vscode.Uri): Promise<void> {
+    const leftBehind = await storage.countSnapshotsUnder(from);
+    if (leftBehind === 0) return;
+
+    const choice = await vscode.window.showWarningMessage(
+        `Chronos: history storage now points at ${to.fsPath}. ${leftBehind} snapshot${leftBehind === 1 ? '' : 's'} remain at ${from.fsPath} and are no longer listed.`,
+        'Copy History Across',
+        'Keep Them Separate'
+    );
+    if (choice === 'Copy History Across') {
+        await copyHistoryAcross(from, to);
+        await storage.getProjectHistory(true);
+        activityProvider.refresh();
+    }
+}
+
+/**
+ * Clears index entries whose snapshot content is gone from disk.
+ *
+ * This deletes history, so it says exactly how much and from which files
+ * first, and the confirmation is modal. Entries that still have their content
+ * are never candidates, and `removeOrphanedEntries` re-checks each one against
+ * disk before dropping it.
+ */
+async function cleanOrphanedHistory() {
+    const reports = await storage.findOrphanedEntries();
+    const own = reports.filter(r => r.own);
+
+    if (own.length === 0) {
+        const elsewhere = reports.reduce((n, r) => n + r.total, 0);
+        vscode.window.showInformationMessage(
+            elsewhere > 0
+                ? `Chronos: no orphaned entries in this project. ${elsewhere} belong to other projects in the shared store and are left alone.`
+                : 'Chronos: every history entry still has its content on disk.'
+        );
+        return;
+    }
+
+    const total = own.reduce((n, r) => n + r.total, 0);
+    const files = own.flatMap(r => r.files);
+    const shown = files.slice(0, 10).map(f => `  • ${f.filePath} — ${f.snapshots.length}`).join('\n');
+    const more = files.length > 10 ? `\n  ...and ${files.length - 10} more file(s)` : '';
+
+    const choice = await vscode.window.showWarningMessage(
+        `Chronos: ${total} history entr${total === 1 ? 'y' : 'ies'} point at content that is no longer on disk, across ${files.length} file${files.length === 1 ? '' : 's'}:\n\n${shown}${more}\n\nRemoving them deletes those entries from the history index for good. Entries whose content is still there are not touched.`,
+        { modal: true },
+        'Remove Them'
+    );
+    if (choice !== 'Remove Them') return;
+
+    const { removed, keptWithContent } = await storage.removeOrphanedEntries(own);
+    const kept = keptWithContent > 0 ? ` ${keptWithContent} were kept because their content was found after all.` : '';
+    vscode.window.showInformationMessage(`Chronos: removed ${removed} orphaned entr${removed === 1 ? 'y' : 'ies'} from the index.${kept}`);
+    activityProvider.refresh();
 }
 
 async function runDiagnostics() {

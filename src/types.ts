@@ -15,6 +15,8 @@ export interface Snapshot {
     linesAdded?: number;
     linesDeleted?: number;
     pinned?: boolean;
+    /** Set at read time when the stored content is not on disk. Never persisted. */
+    contentMissing?: boolean;
 }
 
 export interface HistoryEntry extends Snapshot {

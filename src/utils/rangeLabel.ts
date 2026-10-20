@@ -32,6 +32,9 @@ function describeAnchoring(anchoring?: RangeAnchoring): string {
 /**
  * Adds `anchoringLabel` to every snapshot in a list, descending into the
  * cluster wrappers the views receive. Entries with no range are left alone.
+ *
+ * An entry whose stored content is gone also gets `availabilityLabel`, so the
+ * row can say so before the user clicks it and finds nothing to diff.
  */
 export function withAnchoringLabels(items: any[]): any[] {
     return (items ?? []).map(item => {
@@ -39,6 +42,12 @@ export function withAnchoringLabels(items: any[]): any[] {
             return { ...item, items: withAnchoringLabels(item.items) };
         }
         const label = describeRangeAnchoring(item);
-        return label ? { ...item, anchoringLabel: label } : item;
+        const availability = item?.contentMissing ? 'content unavailable' : undefined;
+        if (!label && !availability) return item;
+        return {
+            ...item,
+            ...(label ? { anchoringLabel: label } : {}),
+            ...(availability ? { availabilityLabel: availability } : {})
+        };
     });
 }

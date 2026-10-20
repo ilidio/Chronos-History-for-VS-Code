@@ -332,6 +332,11 @@
         "category": "Chronos"
       },
       {
+        "command": "chronos.cleanOrphanedHistory",
+        "title": "Remove Orphaned History Entries...",
+        "category": "Chronos"
+      },
+      {
         "command": "chronos.exportHistory",
         "title": "Export History...",
         "category": "Chronos"

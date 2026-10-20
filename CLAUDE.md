@@ -75,6 +75,26 @@ src/
 
 Keep separation of concerns: webview/view logic stays decoupled from core extension logic. Snapshot writes in `storage.ts` must be atomic and degrade gracefully on disk errors.
 
+### Storage integrity
+
+The index and the snapshot blobs are separate on disk and can come apart. Three
+rules hold:
+
+- **Nothing destructive without a confirmation.** `removeOrphanedEntries()` only
+  drops entries whose blob is missing, re-checks each one against disk first, and
+  acts only on the reports its caller passes in. The count and the file list go
+  to the user before the modal confirmation (`cleanOrphanedHistory` in
+  `extension.ts`); diagnostics report the same numbers read-only.
+- **Missing content is a read-time judgement, never a record.** `getHistoryForFile`
+  annotates entries with a transient `contentMissing`; it is never written to
+  `index.json`, because the content may be a remount away.
+- **Changing the storage root copies, it never moves.** `migrateStorage()` verifies
+  every file it writes, skips files already at the destination, and leaves the
+  source untouched. Both entry points must warn: the `chronos.useSharedStorage`
+  command and the `onDidChangeConfiguration` handler for a path edited by hand.
+
+Regressions for all of this live in `test/data_loss_tests.js`.
+
 ## Dependencies
 
 Check `package.json` before adding libraries. Prefer the existing ones:

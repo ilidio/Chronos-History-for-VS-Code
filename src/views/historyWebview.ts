@@ -553,7 +553,8 @@ export class HistoryViewProvider {
                         updateDetails(s);
                     };
                     const timeStr = new Date(s.timestamp).toLocaleTimeString(undefined, {hour:'2-digit',minute:'2-digit'});
-                    const labelStr = s.label || s.filePath.split(new RegExp('[\\\\\\\\/]', 'g')).pop();
+                    const baseLabel = s.label || s.filePath.split(new RegExp('[\\\\\\\\/]', 'g')).pop();
+                    const labelStr = baseLabel + (s.availabilityLabel ? ' (' + s.availabilityLabel + ')' : '');
                     div.innerHTML = '<div class="header"><span class="event-type">' + escapeHtml(s.eventType) + '</span><span>' + timeStr + '</span></div><div>' + escapeHtml(labelStr) + '</div>';
                     if (s.anchoringLabel) div.title = s.anchoringLabel;
                     return div;
@@ -657,7 +658,8 @@ export class HistoryViewProvider {
                         updateDetails(s.item);
                     };
                     const timeStr = new Date(s.item.timestamp).toLocaleTimeString(undefined, {hour:'2-digit',minute:'2-digit'});
-                    const labelStr = s.item.label || s.item.filePath.split(new RegExp('[\\\\\\\\/]', 'g')).pop();
+                    const baseLabel = s.item.label || s.item.filePath.split(new RegExp('[\\\\\\\\/]', 'g')).pop();
+                    const labelStr = baseLabel + (s.item.availabilityLabel ? ' (' + s.item.availabilityLabel + ')' : '');
                     tr.innerHTML = '<td class="jb-td">' + timeStr + '</td><td class="jb-td">' + escapeHtml(s.item.eventType) + '</td><td class="jb-td">' + escapeHtml(labelStr) + '</td>';
                     el.appendChild(tr);
                     s.element = tr;

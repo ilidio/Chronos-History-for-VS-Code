@@ -182,6 +182,35 @@ Safely try out risky refactors without Git branches.
 
 ---
 
+## 🗄️ Storage Health & Moving Your History
+
+Chronos keeps two things side by side: an index of your snapshots, and the
+snapshot content itself. They can come apart — a storage path that changed, a
+drive that was not mounted, a folder cleaned out by hand — leaving entries that
+are listed but have nothing to open.
+
+*   **Run Diagnostics** (`Chronos: Run Diagnostics`) now reports **orphaned
+    entries**: how many entries point at content that is no longer on disk, and
+    which files they belong to.
+*   **Remove Orphaned History Entries...** clears those entries from the index.
+    It tells you how many and from which files first, asks you to confirm, and
+    never touches an entry whose content is still there — each one is re-checked
+    against disk immediately before it is dropped. Projects other than the ones
+    you have open are reported but left alone.
+*   In the history view, an entry whose content is missing is shown as
+    *content unavailable* instead of being offered as a diff. That is a judgement
+    made each time the list is read, never written into the index: if the content
+    comes back, so does the entry.
+
+**Changing where history is stored** (`Chronos: Use External Shared Storage`, or
+editing `chronos.customStoragePath` by hand) does not move anything by itself —
+everything recorded under the old location simply stops being found. Chronos now
+tells you how many snapshots are at the old location and offers to **copy them
+across**. The copy is verified file by file and the original is never deleted, so
+a failed migration costs nothing; removing the old folder is left to you.
+
+---
+
 ## ⚙️ Configuration
 
 | Setting | Default | Description |
@@ -193,6 +222,7 @@ Safely try out risky refactors without Git branches.
 | `chronos.showDiffSideBySide` | `true` | Use native side-by-side diff editor. |
 | `chronos.maxDays` | `30` | Days to keep history before pruning (skips pinned snapshots). |
 | `chronos.saveInProjectFolder` | `false` | Save history in `.history/` inside your project. |
+| `chronos.customStoragePath` | `""` | Global folder for all history (e.g. `~/.chronos-history`). Changing it offers to copy existing history across; nothing is moved or deleted without asking. |
 
 ---
 

@@ -138,6 +138,29 @@ const mockVscode = {
                 }
                 fsStore.delete(uri.toString());
             },
+            // The store is flat, so a directory exists only as a prefix of the
+            // files written under it. Entries are derived from those keys.
+            readDirectory: async (uri) => {
+                const base = uri.toString().replace(/\/$/, '') + '/';
+                const seen = new Map();
+                for (const key of fsStore.keys()) {
+                    if (!key.startsWith(base)) continue;
+                    const rest = key.slice(base.length);
+                    if (!rest) continue;
+                    const slash = rest.indexOf('/');
+                    if (slash === -1) {
+                        seen.set(rest, mockVscode.FileType.File);
+                    } else {
+                        seen.set(rest.slice(0, slash), mockVscode.FileType.Directory);
+                    }
+                }
+                if (seen.size === 0 && !fsStore.has(uri.toString())) {
+                    const error = new Error('Directory not found: ' + uri.toString());
+                    error.code = 'FileNotFound';
+                    throw error;
+                }
+                return [...seen.entries()];
+            },
             stat: async (uri) => {
                 if (!fsStore.has(uri.toString())) {
                     const error = new Error('File not found');
