@@ -102,7 +102,7 @@ This feature integrates deeply with Git to track the evolution of specific lines
 *   **Diff View:** Select any commit to see exactly how those lines changed in that specific version (vs. its parent).
 *   **📝 Compare with Current:** A dedicated button to compare a specific commit's version of the lines with your current work-in-progress.
 *   **🎯 Git History for Context:** The same `git log -L`, but on the enclosing function or class resolved from your cursor instead of a manual selection.
-*   **Line numbers vs. HEAD:** `git log -L` resolves line numbers against the last commit, so Chronos first maps your editor's lines through the uncommitted diff. Edits above the block no longer shift the result.
+*   **Line numbers vs. HEAD:** `git log -L` resolves line numbers against the last commit, so Chronos first maps your editor's lines back through everything that changed since then — **including edits you have not saved**. Type thirty lines above a function, select it where it now sits, and you still get that function's history rather than the history of whatever HEAD holds at those line numbers.
 *   **When `-L` cannot follow:** if the block is too new, or the file moved in a way Git cannot trace, Chronos searches the file's history for the block's name instead (`git log -S`, then the broader `-G`) and tells you the result came from a name search rather than from line tracking.
 *   **When Git cannot answer:** a file that is not committed yet, a repository with no commits, or a range that does not exist in the committed version are each reported for what they are, instead of looking like "no history".
 

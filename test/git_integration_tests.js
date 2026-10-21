@@ -8,6 +8,7 @@
  *  - real `git log -L`, including the -n limit
  *  - real fatal messages reaching the right classification
  *  - real uncommitted changes mapping a buffer range onto HEAD
+ *  - the same mapping for edits that exist only in the editor's buffer
  */
 
 const Module = require('module');
@@ -284,6 +285,40 @@ async function runGitIntegrationTests() {
         git(repo, ['commit', '-q', '-am', 'fifth: commit the prepended lines']);
         const clean = parseHunks(await gitService.getUncommittedHunks(tracked));
         assertEqual(clean.length, 0, 'nothing to map once the tree is clean');
+
+        // ── Section 5: edits that were never saved ──────────────────────────
+        // The tree is clean at this point (Test 9 committed it), which is the
+        // case that used to go wrong: nothing on disk differs from HEAD, so the
+        // disk-based diff finds no hunks and the range is taken literally.
+        console.log('\n[Test 12] An unsaved buffer still maps a range onto HEAD');
+        const onDisk = fs.readFileSync(tracked, 'utf8');
+        assertEqual(parseHunks(await gitService.getUncommittedHunks(tracked)).length, 0,
+            'the file on disk matches HEAD, so the working tree offers nothing to map');
+
+        // What the editor is showing: three more lines on top, never saved.
+        const dirtyText = ['buffer one', 'buffer two', 'buffer three', ...onDisk.split('\n')].join('\n');
+        const dirtyHunks = parseHunks(await gitService.getUncommittedHunksForText(tracked, dirtyText));
+        assert(dirtyHunks.length > 0, 'the buffer text produced hunks against HEAD');
+
+        const dirtyLines = dirtyText.split('\n');
+        const dirtyLine = dirtyLines.findIndex(l => l.includes('EIGHT'));
+        const dirtyMapped = mapRangeBackwards({ startLine: dirtyLine, endLine: dirtyLine }, dirtyHunks);
+        const headNow = git(repo, ['show', 'HEAD:tracked.ts']).split('\n');
+        assertEqual(dirtyLine, headNow.findIndex(l => l.includes('EIGHT')) + 3,
+            'the line sits three lines lower in the buffer than in HEAD');
+        assertEqual(headNow[dirtyMapped.startLine].includes('EIGHT'), true,
+            'and the mapped index is where HEAD really holds it');
+
+        assert(fs.readFileSync(tracked, 'utf8') === onDisk,
+            'the file on disk was not touched to work this out');
+
+        console.log('\n[Test 13] A buffer that matches HEAD has nothing to map');
+        assertEqual(parseHunks(await gitService.getUncommittedHunksForText(tracked, onDisk)).length, 0,
+            'an unmodified buffer produces no hunks');
+
+        console.log('\n[Test 14] A file git has never seen offers no mapping');
+        assertEqual(await gitService.getUncommittedHunksForText(untracked, 'anything at all'), '',
+            'an untracked file yields no hunks instead of a bogus mapping');
 
         console.log('\n[Test 10] The classifier agrees with real stderr, not just fixtures');
         try {

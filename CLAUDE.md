@@ -75,6 +75,17 @@ src/
 
 Keep separation of concerns: webview/view logic stays decoupled from core extension logic. Snapshot writes in `storage.ts` must be atomic and degrade gracefully on disk errors.
 
+### Git line ranges
+
+`git log -L` resolves line numbers against HEAD, so a range taken from the editor
+has to be mapped back first. "Since HEAD" includes edits that were never saved:
+`getUncommittedHunks()` diffs the file **on disk**, which is blind to a dirty
+buffer, so `mapRangeToHead()` uses `getUncommittedHunksForText()` with
+`document.getText()` whenever `document.isDirty`. Getting this wrong is silent —
+the user gets a plausible commit list about the wrong lines. Real-git cases are
+in `test/git_integration_tests.js` (Tests 8-9 saved, 12-14 unsaved) and the
+real-editor case in `test/integration/suite/context_availability.test.js`.
+
 ### Storage integrity
 
 The index and the snapshot blobs are separate on disk and can come apart. Three

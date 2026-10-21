@@ -998,8 +998,9 @@ const GIT_HISTORY_CONFIG: GitHistoryConfig = { maxCommits: 100, followRenames: t
 async function showGitHistoryForRange(editor: vscode.TextEditor, startLine: number, endLine: number, namePath?: string) {
     const filePath = editor.document.uri.fsPath;
     // Line numbers from the editor describe the buffer, but `git log -L` resolves
-    // them against HEAD, so uncommitted edits above the range would shift it.
-    const headRange = await mapRangeToHead(filePath, { startLine, endLine });
+    // them against HEAD, so anything changed above the range — saved or not —
+    // would shift it.
+    const headRange = await mapRangeToHead(editor.document, { startLine, endLine });
     const range: ViewRange = { ...headRange, bufferStartLine: startLine, bufferEndLine: endLine };
     try {
         const history = await gitService.getHistoryForSelection(filePath, range.startLine, range.endLine, GIT_HISTORY_CONFIG);
@@ -1083,14 +1084,25 @@ interface ViewRange extends LineRange {
 
 /**
  * Translates a range taken from the editor buffer into HEAD's line numbers by
- * mapping it back through the uncommitted changes.
+ * mapping it back through whatever has changed since HEAD.
+ *
+ * "Since HEAD" has to include edits that are not saved. The working tree alone
+ * is blind to them, so a selection in a dirty buffer would be sent to
+ * `git log -L` as literal line numbers and answered with the history of
+ * whatever HEAD holds there — a plausible-looking list about the wrong lines.
+ * When the document is dirty its own text is diffed against HEAD instead.
  */
-async function mapRangeToHead(filePath: string, range: LineRange): Promise<LineRange> {
+async function mapRangeToHead(document: vscode.TextDocument, range: LineRange): Promise<LineRange> {
+    const filePath = document.uri.fsPath;
     try {
-        const hunks = parseHunks(await gitService.getUncommittedHunks(filePath));
+        const raw = document.isDirty
+            ? await gitService.getUncommittedHunksForText(filePath, document.getText())
+            : await gitService.getUncommittedHunks(filePath);
+        const hunks = parseHunks(raw);
         if (hunks.length === 0) return range;
         const mapped = mapRangeBackwards(range, hunks);
-        console.log(`[Chronos] Mapped buffer range ${range.startLine}-${range.endLine} onto HEAD as ${mapped.startLine}-${mapped.endLine}`);
+        const against = document.isDirty ? 'unsaved buffer' : 'working tree';
+        console.log(`[Chronos] Mapped buffer range ${range.startLine}-${range.endLine} onto HEAD as ${mapped.startLine}-${mapped.endLine} (via the ${against})`);
         return mapped;
     } catch (e) {
         console.warn('[Chronos] Could not map the range onto HEAD:', e);

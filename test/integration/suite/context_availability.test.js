@@ -196,3 +196,77 @@ describe('history for a context when snapshot content is missing', () => {
         assert.match(report, /availability\.ts: \d+/, 'diagnostics did not name the file');
     });
 });
+
+/**
+ * A selection made in a dirty buffer, in a real editor.
+ *
+ * `git log -L` resolves line numbers against HEAD, so the command has to map
+ * the selection back through everything that changed since HEAD — including
+ * edits that were never saved. Only a real editor has a dirty buffer, which is
+ * why this belongs here: nothing is written to disk at any point.
+ */
+describe('git history for a selection in an unsaved buffer', () => {
+    // A tracked, committed file inside the workspace folder: HEAD has content
+    // to diff the buffer against, and the file is one git knows.
+    const TRACKED = path.resolve(__dirname, '../fixture/sample.ts');
+    const { GitService } = require(path.join(OUT, 'git/gitService.js'));
+    const { parseHunks, mapRangeBackwards } = require(path.join(OUT, 'utils/rangeMapper.js'));
+
+    // Its own capture: the commands would otherwise wait on a click.
+    const seen = [];
+    const original = {};
+    before(() => {
+        original.warn = vscode.window.showWarningMessage;
+        original.error = vscode.window.showErrorMessage;
+        original.status = vscode.window.setStatusBarMessage;
+        vscode.window.showWarningMessage = async (m) => { seen.push(['warn', m]); };
+        vscode.window.showErrorMessage = async (m) => { seen.push(['error', m]); };
+        vscode.window.setStatusBarMessage = (m) => { seen.push(['status', m]); return { dispose() {} }; };
+    });
+    after(() => {
+        vscode.window.showWarningMessage = original.warn;
+        vscode.window.showErrorMessage = original.error;
+        vscode.window.setStatusBarMessage = original.status;
+    });
+
+    it('maps the selection back onto HEAD using the buffer, not the file on disk', async () => {
+        const uri = vscode.Uri.file(TRACKED);
+        const gitService = new GitService();
+        const before = fs.readFileSync(TRACKED, 'utf8');
+
+        const doc = await vscode.workspace.openTextDocument(uri);
+        const editor = await vscode.window.showTextDocument(doc, { preview: false });
+        assert.ok(!doc.isDirty, 'the file should start clean');
+
+        // Clean tree: the disk-based diff has nothing to offer, which is exactly
+        // the case that used to take the buffer's line numbers literally.
+        const fromDisk = parseHunks(await gitService.getUncommittedHunks(TRACKED));
+        assert.strictEqual(fromDisk.length, 0, 'the working tree should match HEAD for this test to mean anything');
+
+        const padding = Array.from({ length: 12 }, (_, i) => `// unsaved line ${i + 1}`).join('\n') + '\n';
+        await editor.edit(e => e.insert(new vscode.Position(0, 0), padding));
+        assert.ok(doc.isDirty, 'the buffer must be dirty and unsaved');
+
+        try {
+            const hunks = parseHunks(await gitService.getUncommittedHunksForText(TRACKED, doc.getText()));
+            assert.ok(hunks.length > 0, 'the unsaved buffer produced no hunks against HEAD');
+
+            // Any line now sits 12 lines lower than HEAD holds it.
+            const mapped = mapRangeBackwards({ startLine: 15, endLine: 18 }, hunks);
+            assert.strictEqual(mapped.startLine, 3, `expected the range to map back by 12, got ${mapped.startLine}`);
+            assert.strictEqual(mapped.endLine, 6, `expected the end to map back by 12, got ${mapped.endLine}`);
+
+            // And the command itself runs clean over that selection.
+            editor.selection = new vscode.Selection(15, 0, 18, 0);
+            seen.length = 0;
+            await vscode.commands.executeCommand('chronos.gitHistoryForSelection');
+            await sleep(1200);
+            assert.ok(!seen.some(n => n[0] === 'error'), `the command errored: ${JSON.stringify(seen)}`);
+        } finally {
+            await vscode.commands.executeCommand('workbench.action.revertAndCloseActiveEditor');
+            await sleep(300);
+            assert.strictEqual(fs.readFileSync(TRACKED, 'utf8'), before,
+                'the test wrote to a file of this repository');
+        }
+    });
+});

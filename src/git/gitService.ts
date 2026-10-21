@@ -1,6 +1,8 @@
 import * as cp from 'child_process';
 import * as vscode from 'vscode';
 import * as path from 'path';
+import * as fs from 'fs';
+import * as os from 'os';
 import { GitCommit, GitHistoryConfig, GitRangeFailure, GitRangeHistory } from '../types';
 import { hunkNewRange, parseHunks } from '../utils/rangeMapper';
 
@@ -348,6 +350,63 @@ export class GitService {
                 resolve(stdout);
             });
         });
+    }
+
+    /**
+     * Hunk headers (-U0) between HEAD and the text the editor is showing.
+     *
+     * `getUncommittedHunks` compares HEAD with the file on disk, which is blind
+     * to edits that have not been saved yet: a selection made in a dirty buffer
+     * would then be resolved against lines that have already moved, and
+     * `git log -L` would answer about whatever HEAD happens to hold there. The
+     * buffer's own text is diffed against HEAD instead, so the mapping sees
+     * exactly what the user sees.
+     *
+     * Returns no hunks when the file is not in HEAD — there is nothing to map a
+     * range onto, and `getHistoryForSelection` reports that case itself.
+     */
+    async getUncommittedHunksForText(filePath: string, bufferText: string): Promise<string> {
+        const workspaceFolder = vscode.workspace.getWorkspaceFolder(vscode.Uri.file(filePath));
+        if (!workspaceFolder) return '';
+        const cwd = workspaceFolder.uri.fsPath;
+
+        let headContent: string;
+        try {
+            const canonicalPath = await this.getCanonicalPath(filePath);
+            const { stdout, stderr } = await this.runGit(['show', `HEAD:${canonicalPath}`], cwd);
+            if (!stdout && stderr) {
+                console.warn('Git show HEAD failed:', stderr);
+                return '';
+            }
+            headContent = stdout;
+        } catch (e) {
+            // Not in HEAD at all (a new file), or not a repository.
+            return '';
+        }
+
+        // git compares files, so both sides have to be files. They are written
+        // to a directory of their own and removed again straight away.
+        let dir: string | undefined;
+        try {
+            dir = fs.mkdtempSync(path.join(os.tmpdir(), 'chronos-buffer-'));
+            const base = path.basename(filePath);
+            const headFile = path.join(dir, `head-${base}`);
+            const bufferFile = path.join(dir, `buffer-${base}`);
+            fs.writeFileSync(headFile, headContent);
+            fs.writeFileSync(bufferFile, bufferText);
+            return await this.getHunks(headFile, bufferFile);
+        } catch (e) {
+            console.warn('Git diff (buffer hunks) failed:', e);
+            return '';
+        } finally {
+            if (dir) {
+                try {
+                    fs.rmSync(dir, { recursive: true, force: true });
+                } catch (e) {
+                    console.warn('Could not remove the temporary buffer diff directory:', e);
+                }
+            }
+        }
     }
 
     /**
