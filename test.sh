@@ -95,6 +95,13 @@ if [ $? -ne 0 ]; then
     exit 1
 fi
 
+echo "🧪 Running Hard Git History Tests (real git, awkward history)..."
+node test/git_hard_history_tests.js
+if [ $? -ne 0 ]; then
+    echo "❌ Hard git history tests failed!"
+    exit 1
+fi
+
 echo "🧪 Running History-Loss Regression Tests..."
 node test/data_loss_tests.js
 if [ $? -ne 0 ]; then

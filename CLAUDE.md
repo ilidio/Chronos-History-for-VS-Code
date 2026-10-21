@@ -86,6 +86,24 @@ the user gets a plausible commit list about the wrong lines. Real-git cases are
 in `test/git_integration_tests.js` (Tests 8-9 saved, 12-14 unsaved) and the
 real-editor case in `test/integration/suite/context_availability.test.js`.
 
+### What `git log -L` cannot do
+
+`test/git_hard_history_tests.js` builds a history shaped like a real one
+(branches, a real merge, a squash merge, a rename, a function extracted into
+another file, a cherry-pick, a reindent) and pins three limitations that are
+git's, not ours, so that changing them has to be deliberate:
+
+- **`-L` stops where a block changed position.** A move inside the file reads as
+  a deletion plus an insertion, so the walk treats the lines as created there
+  and everything older is unreachable.
+- **Whitespace-only commits count as changes**, and `-w` does not drop them.
+- **A block extracted into another file loses its past**, and the name-search
+  fallback does not help, because it is only consulted when `-L` returns
+  *nothing* — a truncated answer is presented as the whole history.
+
+The last one is the only one we could improve: supplement a non-empty `-L`
+answer when its oldest commit is where the block appears but the file is older.
+
 ### Storage integrity
 
 The index and the snapshot blobs are separate on disk and can come apart. Three
