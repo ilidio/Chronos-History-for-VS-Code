@@ -3,7 +3,7 @@ import * as vscode from 'vscode';
 import * as path from 'path';
 import * as fs from 'fs';
 import * as os from 'os';
-import { GitCommit, GitHistoryConfig, GitRangeFailure, GitRangeHistory } from '../types';
+import { GitCommit, GitHistoryConfig, GitRangeFailure, GitRangeHistory, GitRangeTruncation } from '../types';
 import { hunkNewRange, parseHunks } from '../utils/rangeMapper';
 
 /**
@@ -44,6 +44,27 @@ function withCommitRange(commit: GitCommit): GitCommit {
 
     const range = hunkNewRange(hunks[0]);
     return { ...commit, relevantRange: { start: range.startLine, end: range.endLine } };
+}
+
+/**
+ * True when the range's hunk in this commit is a pure insertion.
+ *
+ * That is what `git log -L` reports for the commit where a block first appears
+ * — and equally for one where it merely moved, which is why it cannot be taken
+ * as the block's origin without checking the file's own history.
+ */
+function blockAppearsIn(diff: string): boolean {
+    const lines = diff.split('\n');
+    const start = lines.findIndex(l => l.startsWith('@@'));
+    if (start === -1) return false;
+
+    let added = 0;
+    for (const line of lines.slice(start + 1)) {
+        if (line.startsWith('@@')) break;
+        if (line.startsWith('+')) added++;
+        else if (line.startsWith('-')) return false;
+    }
+    return added > 0;
 }
 
 export class GitService {
@@ -213,7 +234,13 @@ export class GitService {
                     resolve({ commits: [], failure });
                     return;
                 }
-                resolve({ commits: this.parseGitLogL(stdout, limit) });
+                const commits = this.parseGitLogL(stdout, limit);
+                // Resolved after the promise settles would be too late, so the
+                // check happens here; it costs one `git log -n1` and only when
+                // the oldest commit looks like the block's beginning.
+                this.detectTruncation(commits, filePath, workspaceFolder.uri.fsPath, limit)
+                    .then(truncation => resolve(truncation ? { commits, truncation } : { commits }))
+                    .catch(() => resolve({ commits }));
             });
         });
     }
@@ -284,6 +311,28 @@ export class GitService {
         const args = ['-c', 'color.ui=false', 'log', '-p', `-n${limit}`, `-S${symbol}`, '--', canonicalPath];
 
         return this.runLogSearch(args, workspaceFolder.uri.fsPath, limit, '-S');
+    }
+
+    /**
+     * The same pickaxe search, but over the whole repository.
+     *
+     * Scoped to one file it cannot answer the question that matters when a
+     * block's history stops at the file's first commit: the code was written
+     * somewhere else, under another path, and that is exactly what the
+     * file-scoped search excludes. The extension filters this to the same file
+     * extension so a symbol like `add` does not drag in every language in the
+     * tree.
+     */
+    async getHistoryBySymbolAnywhere(filePath: string, symbol: string, config: GitHistoryConfig): Promise<GitCommit[]> {
+        const workspaceFolder = vscode.workspace.getWorkspaceFolder(vscode.Uri.file(filePath));
+        if (!workspaceFolder) return [];
+
+        const limit = Math.max(1, config.maxCommits);
+        const extension = path.extname(filePath);
+        const pathspec = extension ? [`*${extension}`] : [];
+        const args = ['-c', 'color.ui=false', 'log', '-p', `-n${limit}`, `-S${symbol}`, '--', ...pathspec];
+
+        return this.runLogSearch(args, workspaceFolder.uri.fsPath, limit, '-S (repository-wide)');
     }
 
     /**
@@ -591,6 +640,55 @@ export class GitService {
         } catch (e) {
             console.error(`Failed to get content from branch ${branch}:`, e);
             return ''; 
+        }
+    }
+
+    /**
+     * Whether a complete-looking `-L` answer is in fact cut short.
+     *
+     * The oldest commit it reached shows the range as a pure insertion, which
+     * happens both where a block is first written and where it merely moved. If
+     * the file itself has a commit older than that, the block's history did not
+     * begin there and the rest is simply out of `-L`'s reach. Callers can then
+     * say so instead of presenting a fragment as the whole story.
+     */
+    private async detectTruncation(
+        commits: GitCommit[],
+        filePath: string,
+        cwd: string,
+        limit: number
+    ): Promise<GitRangeTruncation | undefined> {
+        // A list cut off by -n is a different kind of incomplete, and the caller
+        // asked for that one.
+        if (commits.length === 0 || commits.length >= limit) return undefined;
+
+        const oldest = commits[commits.length - 1];
+        if (!blockAppearsIn(oldest.diff)) return undefined;
+
+        try {
+            // The file may well have had another name back there — that is one
+            // of the ways a block ends up looking newly written — so the path
+            // has to be the one that commit knew.
+            const pathThen = await this.getCanonicalPath(filePath, oldest.hash);
+            const { stdout } = await this.runGit(
+                ['log', '-n1', '--format=%H', '--follow', `${oldest.hash}~1`, '--', pathThen],
+                cwd
+            );
+            const previousFileCommit = stdout.trim().split('\n')[0];
+            if (previousFileCommit) {
+                // The file is older than the point where tracking stopped, so
+                // the block's history cannot begin there.
+                return { hash: oldest.hash, reason: 'block-moved', previousFileCommit };
+            }
+
+            // The file starts there. Either the code is genuinely new, or it
+            // came from another file — a move line tracking cannot follow. The
+            // caller decides, because telling the two apart needs a name.
+            return { hash: oldest.hash, reason: 'new-file', previousFileCommit: '' };
+        } catch (e) {
+            // `<hash>~1` does not exist: the oldest commit is the repository's
+            // first, so there is nothing beyond it to miss.
+            return undefined;
         }
     }
 

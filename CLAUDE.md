@@ -97,12 +97,23 @@ git's, not ours, so that changing them has to be deliberate:
   a deletion plus an insertion, so the walk treats the lines as created there
   and everything older is unreachable.
 - **Whitespace-only commits count as changes**, and `-w` does not drop them.
-- **A block extracted into another file loses its past**, and the name-search
-  fallback does not help, because it is only consulted when `-L` returns
-  *nothing* — a truncated answer is presented as the whole history.
+- **A block extracted into another file loses its past.** `-L` on the new file
+  starts at the commit that created it.
 
-The last one is the only one we could improve: supplement a non-empty `-L`
-answer when its oldest commit is where the block appears but the file is older.
+The last one is the part we can do something about, and `getHistoryForSelection`
+now does: when the oldest commit it reached shows the range as a pure insertion,
+it reports a `truncation`, with the reason distinguishing the two cases.
+`block-moved` means the file has older commits, so the block's history cannot
+begin there — stated outright. `new-file` means the trail ends with the file
+itself, so anything older lived under another path: the command searches by name
+**across the repository** (`getHistoryBySymbolAnywhere`), appends what it finds
+and says it came from a name search, and stays silent when nothing corroborates
+a gap, because a genuinely new file looks exactly the same. A name search cannot
+see edits to a block's body, so the message says that too.
+
+Notifications about a result are told, never awaited: the panel is already on
+screen, and awaiting one keeps the command pending until someone dismisses a
+message they may never look at.
 
 ### Storage integrity
 

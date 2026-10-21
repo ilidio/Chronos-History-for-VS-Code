@@ -17,7 +17,7 @@ import { GitIgnoreService } from './git/gitIgnoreService';
 import { AIService } from './ai/aiService';
 import { BackupService } from './backup';
 import { ProjectRestorer } from './timeTravel';
-import { Snapshot, GitCommit, GitHistoryConfig } from './types';
+import { Snapshot, GitCommit, GitHistoryConfig, GitRangeHistory } from './types';
 import { resolveContextForEditor, ResolvedContext } from './utils/contextResolver';
 import { LineRange, mapRangeBackwards, parseHunks } from './utils/rangeMapper';
 
@@ -1013,6 +1013,10 @@ async function showGitHistoryForRange(editor: vscode.TextEditor, startLine: numb
         }
 
         if (history.commits.length > 0) {
+            if (history.truncation) {
+                await presentTruncatedGitHistory(history, filePath, range, namePath);
+                return;
+            }
             presentGitHistory(history.commits, filePath, range);
             return;
         }
@@ -1030,6 +1034,73 @@ async function showGitHistoryForRange(editor: vscode.TextEditor, startLine: numb
     } catch (e) {
         vscode.window.showErrorMessage('Failed to show git history for selection: ' + e);
     }
+}
+
+/**
+ * Presents a `-L` answer that stops short, together with whatever a name search
+ * can add, and says which is which.
+ *
+ * Line tracking loses a block where it changed position: the lines read as
+ * newly written, so the walk ends there even though the file is older. Showing
+ * that fragment silently is the worst option — it looks like the whole history.
+ * The name search cannot see edits to a block's body, so what it adds is
+ * genuinely a supplement, and the message says so rather than implying the list
+ * is now complete.
+ */
+async function presentTruncatedGitHistory(
+    history: GitRangeHistory,
+    filePath: string,
+    range: ViewRange,
+    namePath?: string
+): Promise<void> {
+    const stopsAt = history.truncation!.hash.slice(0, 8);
+    // Where the trail ends with the file itself, the rest of the block's life
+    // is under some other path, so the search has to leave this file behind.
+    const scope = history.truncation!.reason === 'new-file' ? 'anywhere' : 'this-file';
+    const traced = namePath ? await traceSymbolHistory(filePath, namePath, scope) : undefined;
+
+    const known = new Set(history.commits.map(c => c.hash));
+    const extra = (traced?.commits ?? []).filter(c => !known.has(c.hash));
+
+    // The supplement is older than the point where tracking stopped, so it goes
+    // after the tracked commits and the list stays newest-first.
+    presentGitHistory([...history.commits, ...extra], filePath, range);
+
+    if (extra.length > 0) {
+        const where = history.truncation!.reason === 'new-file'
+            ? `${stopsAt} is the first commit of this file, so anything older lived somewhere else`
+            : `line tracking stops at ${stopsAt}, where these lines look newly written — usually because the block moved`;
+        tellAboutTruncation(
+            `Chronos: ${where}. ${extra.length} older commit${extra.length === 1 ? '' : 's'} that ${traced!.how} "${traced!.symbol}" ${extra.length === 1 ? 'is' : 'are'} listed after it, found by name. Edits to the block's body before that cannot be found this way.`
+        );
+        return;
+    }
+
+    // Nothing corroborates a gap for a file that simply starts here, and a new
+    // file is the ordinary case: saying anything would be crying wolf.
+    if (history.truncation!.reason === 'new-file') return;
+
+    const searched = namePath ? ' A search by name found nothing older.' : '';
+    tellAboutTruncation(
+        `Chronos: line tracking stops at ${stopsAt}, where these lines look newly written — usually because the block moved. The file has history older than that which cannot be followed by line.${searched}`
+    );
+}
+
+/**
+ * Says a thing about the history just shown, without making the command wait.
+ *
+ * The panel is already on screen by this point, so awaiting the notification
+ * would only keep the command's promise pending until someone dismisses a
+ * message they may never look at — and anything waiting on that command would
+ * sit there with it.
+ */
+function tellAboutTruncation(message: string): void {
+    void vscode.window.showInformationMessage(message, 'Show Full File History')
+        .then(choice => {
+            if (choice === 'Show Full File History') {
+                void vscode.commands.executeCommand('chronos.showGitHistory');
+            }
+        });
 }
 
 function presentGitHistory(commits: GitCommit[], filePath: string, range?: ViewRange) {
@@ -1056,9 +1127,21 @@ function presentGitHistory(commits: GitCommit[], filePath: string, range?: ViewR
  * introduced or removed — few results, high confidence. Failing that, -G
  * matches any patch mentioning it, which is broader but survives rewrites.
  */
-async function traceSymbolHistory(filePath: string, namePath: string): Promise<{ commits: GitCommit[], symbol: string, how: string } | undefined> {
+async function traceSymbolHistory(
+    filePath: string,
+    namePath: string,
+    scope: 'this-file' | 'anywhere' = 'this-file'
+): Promise<{ commits: GitCommit[], symbol: string, how: string } | undefined> {
     const symbol = namePath.split('.').pop() ?? '';
     if (symbol.length === 0) return undefined;
+
+    if (scope === 'anywhere') {
+        // The block's history stops where its file begins, so whatever came
+        // before is under another path and a file-scoped search cannot see it.
+        const elsewhere = await gitService.getHistoryBySymbolAnywhere(filePath, symbol, GIT_HISTORY_CONFIG);
+        if (elsewhere.length > 0) return { commits: elsewhere, symbol, how: 'added or removed' };
+        return undefined;
+    }
 
     const introduced = await gitService.getHistoryBySymbol(filePath, symbol, GIT_HISTORY_CONFIG);
     if (introduced.length > 0) return { commits: introduced, symbol, how: 'added or removed' };

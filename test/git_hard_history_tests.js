@@ -11,7 +11,9 @@
  *
  * Some cases assert limitations rather than successes. They are `git log -L`'s
  * limitations, not ours, and they are pinned here so that improving them has to
- * be a deliberate act: the test fails loudly and says what to reconsider.
+ * be a deliberate act: the test fails loudly and says what to reconsider. Where
+ * we can do better than git — telling the user that an answer was cut short —
+ * that is asserted as behaviour we owe them.
  */
 
 const Module = require('module');
@@ -223,13 +225,23 @@ async function run() {
         assertSame(mul.hashes, [c.extracted], 'the extracted file reports the commit that created it');
 
         // ── What it cannot do, pinned on purpose ─────────────────────────────
-        console.log('\n[Test 6] LIMITATION: `-L` stops where a block changed position');
+        console.log('\n[Test 6] `-L` stops where a block changed position, and says so');
         // "put mul() above add()" rewrote the region as a deletion plus an
         // insertion, so -L reads it as the lines being created there and walks
-        // no further. The two commits before it are unreachable this way.
+        // no further. The two commits before it are unreachable this way — but
+        // the answer now carries the fact that it was cut short.
         assert(add.hashes.includes(c.moved), 'the move is reported as if it changed the block');
         assert(!add.hashes.includes(c.born) && !add.hashes.includes(c.guard),
-            'and everything older than the move is missing from the answer');
+            'and everything older than the move is missing from the line-tracked answer');
+
+        const addRaw = await gitService.getHistoryForSelection(file, addStart - 1, addEnd - 1, CONFIG);
+        assert(!!addRaw.truncation, 'the result is flagged as truncated rather than looking complete');
+        assert(addRaw.truncation && addRaw.truncation.hash.startsWith(c.moved),
+            `the flag names the commit where tracking stopped (${addRaw.truncation && addRaw.truncation.hash.slice(0, 7)})`);
+        assert(addRaw.truncation && addRaw.truncation.reason === 'block-moved',
+            'and says why: the file is older than the point where tracking stopped');
+        assert(addRaw.truncation && addRaw.truncation.previousFileCommit.length > 0,
+            'naming the commit that changed the file before that, which is the proof there is more');
         const beforeTheMove = cp.execFileSync('git',
             ['log', '--format=%h', `-L${3},${6}:src/calc.js`, `${c.moved}~1`],
             { cwd: repo, env: GIT_ENV, encoding: 'utf8' })
@@ -258,12 +270,31 @@ async function run() {
             'a name search would recover the commit that created it, which the fallback could offer');
         assert(!byName.includes(c.product) && !byName.includes(c.round),
             'though not the edits to its body, which no name search can see');
-        // The fallback is only consulted when -L returns nothing, and here it
-        // returns the extraction commit, so none of the above is offered today.
-        assert(mul.hashes.length === 1,
-            'so a non-empty but truncated answer is presented as the whole history');
+        assert(mul.hashes.length === 1, 'line tracking alone reports only the extraction');
 
-        console.log('\n[Test 9] A range that does not exist in the committed file is reported, not guessed');
+        console.log('\n[Test 9] The extracted block is flagged as starting with its file');
+        const mulRaw = await gitService.getHistoryForSelection(mulFile, 2, 5, CONFIG);
+        assert(!!mulRaw.truncation, 'the one-commit answer is flagged rather than looking complete');
+        assert(mulRaw.truncation && mulRaw.truncation.reason === 'new-file',
+            'with the reason that this is the file\'s first commit, so anything older lived elsewhere');
+        // Which is only worth telling the user when something corroborates it,
+        // and that is what the repository-wide name search is for: scoped to
+        // mul.js it can only find the commit that created the file.
+        const inThisFile = (await gitService.getHistoryBySymbol(mulFile, 'mul', CONFIG))
+            .map(c => c.hash.slice(0, 7));
+        assertSame(inThisFile, [c.extracted],
+            'a search scoped to the new file adds nothing, because the past is not in it');
+
+        const anywhere = (await gitService.getHistoryBySymbolAnywhere(mulFile, 'mul', CONFIG))
+            .map(c => c.hash.slice(0, 7));
+        assert(anywhere.includes(c.born),
+            'the repository-wide search finds the commit that first wrote mul(), in the file it lived in then');
+        assert(anywhere.filter(h => !mul.hashes.includes(h)).length > 0,
+            'so there is something to add to the line-tracked answer');
+        assert(!anywhere.includes(c.product) && !anywhere.includes(c.round),
+            'though not the edits to its body, which no name search can see');
+
+        console.log('\n[Test 10] A range that does not exist in the committed file is reported, not guessed');
         const beyond = await found(file, 500, 501);
         assert(beyond.failure === 'bad-range', `a range past the end is reported (${beyond.failure})`);
     } finally {

@@ -78,6 +78,34 @@ export interface GitRangeHistory {
     commits: GitCommit[];
     /** Set when git itself failed. Absent means the answer is trustworthy. */
     failure?: GitRangeFailure;
+    /** Set when the answer is complete as far as `git log -L` can see, but the
+     *  block demonstrably has history older than that. */
+    truncation?: GitRangeTruncation;
+}
+
+/**
+ * Where line tracking gave up.
+ *
+ * `git log -L` follows a range by diff arithmetic, so a block that changed
+ * position reads as a deletion plus an insertion: the lines look created there
+ * and the walk stops, with everything older unreachable. The answer is not
+ * wrong, it is cut short — and saying nothing would present a fragment as the
+ * whole history.
+ */
+export interface GitRangeTruncation {
+    /** The oldest commit `-L` reached, where the block appears to be created. */
+    hash: string;
+    /**
+     * `block-moved`: the file itself has older commits, so the block's history
+     * does not begin there — the lines only look new because they moved.
+     * `new-file`: that commit is the file's first, so anything older would have
+     * to live in another file, which line tracking cannot reach. On its own
+     * that is also what a genuinely new file looks like, so a caller must find
+     * corroboration before it says anything.
+     */
+    reason: 'block-moved' | 'new-file';
+    /** A commit that changed the file before that. Empty for `new-file`. */
+    previousFileCommit: string;
 }
 
 export interface GitCommit {
