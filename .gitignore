@@ -35,3 +35,6 @@ tmp/
 .ai_logs/
 .prompt_history/
 test_secrets.json
+
+# integration test scratch file
+test/integration/fixture/scratch.ts

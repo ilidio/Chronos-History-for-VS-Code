@@ -38,9 +38,18 @@ const mockSpawn = (cmd, args, opts) => {
     return proc;
 };
 
+// GitService reads file content with execFile; `ls-files` must come back empty
+// so the canonical path falls through to the workspace-relative one.
+const mockExecFile = (cmd, args, opts, cb) => {
+    if (args.includes('ls-files')) return cb(null, '', '');
+    return cb(null, 'one\ntwo\nthree\nfour\nfive\nsix\nseven\neight\n', '');
+};
+
 Module.prototype.require = function(request) {
     if (request === 'vscode') return mockVscode;
-    if (request === 'child_process') return { spawn: mockSpawn };
+    if (request === 'child_process') {
+        return { spawn: mockSpawn, execFile: mockExecFile, exec: (c, o, cb) => cb(null, '', '') };
+    }
     return originalRequire.apply(this, arguments);
 };
 
@@ -154,25 +163,16 @@ async function runSelectionHistoryTests() {
         }
     }
 
-    // ── Test 2: openDiff with relevantRange produces non-empty slices ────────
-    console.log('\n[Test 2] openDiff — slices are non-empty when relevantRange is set');
+    // ── Test 2: openDiff reveals the range in the real files ────────────────
+    console.log('\n[Test 2] openDiff — opens the real files and reveals the range');
     {
-        let diffCalled = false;
-        let leftUri = null;
-        let rightUri = null;
-
-        // Intercept vscode.diff command
+        let diffCall = null;
         const origExecute = mockVscode.commands.executeCommand;
         mockVscode.commands.executeCommand = async (cmd, ...args) => {
-            if (cmd === 'vscode.diff') {
-                diffCalled = true;
-                leftUri = args[0];
-                rightUri = args[1];
-            }
+            if (cmd === 'vscode.diff') diffCall = args;
             if (commandsMap.has(cmd)) return commandsMap.get(cmd)(...args);
         };
 
-        // Directly invoke _chronos.openDiff with a snapshot that has relevantRange
         const openDiffCmd = commandsMap.get('_chronos.openDiff');
         assert(!!openDiffCmd, '_chronos.openDiff is registered');
 
@@ -182,27 +182,22 @@ async function runSelectionHistoryTests() {
             filePath: 'target.ts',
             eventType: 'save',
             storagePath: snapBId,
-            relevantRange: { start: 2, end: 2 }  // just line 2 (0-based)
+            relevantRange: { start: 2, end: 2 }
         };
-        const currentSelection = { startLine: 2, endLine: 2 };
 
-        await openDiffCmd(snapshotWithRange, fileUri.fsPath, currentSelection);
+        await openDiffCmd(snapshotWithRange, fileUri.fsPath, { startLine: 2, endLine: 4 });
 
-        assert(diffCalled, 'vscode.diff was called');
-        if (diffCalled && leftUri && rightUri) {
-            // Read the temp files that were written
-            const leftContent = leftUri.fsPath ? fsStore.get(leftUri.toString()) || fsStore.get(leftUri.fsPath) : null;
-            const rightContent = rightUri.fsPath ? fsStore.get(rightUri.toString()) || fsStore.get(rightUri.fsPath) : null;
-
-            if (leftContent) {
-                const leftText = new TextDecoder().decode(leftContent);
-                assert(leftText.length > 0, 'Left (snapshot slice) temp file is not empty');
-                assert(!leftText.includes('\n') || leftText.split('\n').length <= 3,
-                    'Left slice contains only the relevant lines (not full file)');
-            }
-            if (rightContent) {
-                const rightText = new TextDecoder().decode(rightContent);
-                assert(rightText.length > 0, 'Right (current file slice) temp file is not empty');
+        assert(!!diffCall, 'vscode.diff was called');
+        if (diffCall) {
+            const [leftUri, rightUri, , options] = diffCall;
+            // No more slicing into temp files: both sides are the real thing, so
+            // the user keeps the context around the block and its true line numbers.
+            assert(!String(leftUri.fsPath).includes('current_selection'), 'the left side is the snapshot itself, not a slice');
+            assertEqual(String(rightUri.fsPath), fileUri.fsPath, 'the right side is the file on disk');
+            assert(!!options && !!options.selection, 'a selection is passed for the editor to reveal');
+            if (options && options.selection) {
+                assertEqual(options.selection.start.line, 2, 'revealed range starts on the selected line');
+                assertEqual(options.selection.end.line, 4, 'and ends on the last selected line');
             }
         }
 
@@ -212,10 +207,10 @@ async function runSelectionHistoryTests() {
     // ── Test 3: openDiff with vscode.Selection format (panel provider path) ──
     console.log('\n[Test 3] openDiff — normalizes raw vscode.Selection { start.line, end.line }');
     {
-        let diffCalled = false;
+        let diffCall = null;
         const origExecute = mockVscode.commands.executeCommand;
         mockVscode.commands.executeCommand = async (cmd, ...args) => {
-            if (cmd === 'vscode.diff') diffCalled = true;
+            if (cmd === 'vscode.diff') diffCall = args;
             if (commandsMap.has(cmd)) return commandsMap.get(cmd)(...args);
         };
 
@@ -238,7 +233,10 @@ async function runSelectionHistoryTests() {
         };
 
         await openDiffCmd(snapshotWithRange, fileUri.fsPath, rawSelection);
-        assert(diffCalled, 'vscode.diff was called when currentSelection uses {start.line, end.line} format');
+        assert(!!diffCall, 'vscode.diff was called when currentSelection uses {start.line, end.line} format');
+        if (diffCall && diffCall[3] && diffCall[3].selection) {
+            assertEqual(diffCall[3].selection.start.line, 2, 'the raw selection still reveals the right line');
+        }
 
         mockVscode.commands.executeCommand = origExecute;
     }
@@ -325,6 +323,192 @@ async function runSelectionHistoryTests() {
         } catch(e) {
             console.error('  ❌ gitHistoryForSelection threw:', e.message);
             failed++;
+        }
+    }
+
+    // ── Test 7: openDiffGit reveals the commit's own range ──────────────────
+    console.log('\n[Test 7] openDiffGit — reveals the commit\'s own range, not the one it was handed');
+    {
+        let diffCall = null;
+        const origExecute = mockVscode.commands.executeCommand;
+        mockVscode.commands.executeCommand = async (cmd, ...args) => {
+            if (cmd === 'vscode.diff') diffCall = args;
+            if (commandsMap.has(cmd)) return commandsMap.get(cmd)(...args);
+        };
+
+        const openDiffGitCmd = commandsMap.get('_chronos.openDiffGit');
+        assert(!!openDiffGitCmd, '_chronos.openDiffGit is registered');
+
+        // Both sides are versions of this commit, so only its own line numbers
+        // apply — the range from the editor would point somewhere else.
+        const commit = {
+            hash: 'abc1234def',
+            author: 'Me',
+            date: '2024-01-01',
+            message: 'touch the block',
+            diff: '',
+            relevantRange: { start: 40, end: 44 }
+        };
+
+        await openDiffGitCmd(commit, fileUri.fsPath, { startLine: 2, endLine: 4 });
+        await new Promise(r => setTimeout(r, 20));
+
+        assert(!!diffCall, 'vscode.diff was called');
+        if (diffCall && diffCall[3] && diffCall[3].selection) {
+            assertEqual(diffCall[3].selection.start.line, 40, "the commit's own range is revealed");
+        } else if (diffCall) {
+            assert(false, 'a selection is passed for the editor to reveal');
+        }
+
+        mockVscode.commands.executeCommand = origExecute;
+    }
+
+    // ── Test 8: openDiffGitCurrent reveals the buffer range ─────────────────
+    console.log('\n[Test 8] openDiffGitCurrent — reveals the buffer range, not the HEAD range');
+    {
+        let diffCall = null;
+        const origExecute = mockVscode.commands.executeCommand;
+        mockVscode.commands.executeCommand = async (cmd, ...args) => {
+            if (cmd === 'vscode.diff') diffCall = args;
+            if (commandsMap.has(cmd)) return commandsMap.get(cmd)(...args);
+        };
+
+        const openDiffCurrentCmd = commandsMap.get('_chronos.openDiffGitCurrent');
+        assert(!!openDiffCurrentCmd, '_chronos.openDiffGitCurrent is registered');
+
+        const commit = { hash: 'abc1234def', author: 'Me', date: '2024-01-01', message: 'x', diff: '' };
+
+        // The right-hand side is the file on disk, so the editor's own lines are
+        // the ones that apply — uncommitted edits shifted them away from HEAD's.
+        await openDiffCurrentCmd(commit, fileUri.fsPath, {
+            startLine: 7, endLine: 9,
+            bufferStartLine: 10, bufferEndLine: 12
+        });
+        await new Promise(r => setTimeout(r, 20));
+
+        assert(!!diffCall, 'vscode.diff was called');
+        if (diffCall && diffCall[3] && diffCall[3].selection) {
+            assertEqual(diffCall[3].selection.start.line, 10, 'the buffer range is revealed');
+            assertEqual(diffCall[3].selection.end.line, 12, 'through to its last line');
+        } else if (diffCall) {
+            assert(false, 'a selection is passed for the editor to reveal');
+        }
+
+        mockVscode.commands.executeCommand = origExecute;
+    }
+
+    // ── Test 9: a file with no snapshots at all ─────────────────────────────
+    console.log('\n[Test 9] A file with no snapshots opens the panel, not a notification');
+    {
+        // "No snapshot changed these lines" would blame the range for something
+        // else entirely: nothing was ever recorded for this file.
+        let warnings = 0;
+        let focusedPanel = false;
+        const origWarning = mockVscode.window.showWarningMessage;
+        const origInfo = mockVscode.window.showInformationMessage;
+        const origConfig = mockVscode.workspace.getConfiguration;
+        const origExecute = mockVscode.commands.executeCommand;
+
+        mockVscode.window.showWarningMessage = () => { warnings++; };
+        mockVscode.window.showInformationMessage = () => { warnings++; };
+        // Panel mode gives an observable signal: showHistory focuses the panel.
+        // (The editor-mode path reuses a panel an earlier test already created,
+        // so counting createWebviewPanel would prove nothing here.)
+        mockVscode.workspace.getConfiguration = (section) => ({
+            get: (key, def) => (key === 'viewMode' ? 'panel' : def)
+        });
+        mockVscode.commands.executeCommand = async (cmd, ...args) => {
+            if (cmd === 'chronos.historyPanel.focus') focusedPanel = true;
+            if (commandsMap.has(cmd)) return commandsMap.get(cmd)(...args);
+        };
+
+        const unknown = mockVscode.Uri.file('/workspace/never-seen.ts');
+        mockVscode.window.activeTextEditor = {
+            document: { uri: unknown, getText: () => 'a\nb\nc\nd\ne', lineCount: 5 },
+            selection: new mockVscode.Range(1, 0, 2, 3)
+        };
+
+        try {
+            await commandsMap.get('chronos.showHistoryForSelection')();
+            await new Promise(r => setTimeout(r, 30));
+            assertEqual(warnings, 0, 'no notification is shown');
+            assert(focusedPanel, 'the history panel is opened, to show its own empty state');
+        } finally {
+            mockVscode.window.showWarningMessage = origWarning;
+            mockVscode.window.showInformationMessage = origInfo;
+            mockVscode.workspace.getConfiguration = origConfig;
+            mockVscode.commands.executeCommand = origExecute;
+        }
+    }
+
+    // ── Test 10: snapshots exist but the range was never touched ────────────
+    console.log('\n[Test 10] A range no snapshot touched is reported, not silently widened');
+    {
+        let panels = 0;
+        const warningTexts = [];
+        const origPanel = mockVscode.window.createWebviewPanel;
+        const origWarning = mockVscode.window.showWarningMessage;
+        mockVscode.window.createWebviewPanel = (...args) => { panels++; return origPanel(...args); };
+        mockVscode.window.showWarningMessage = (msg) => { warningTexts.push(String(msg)); };
+
+        // The mocked diff only ever touches line 3, so a range well below it has
+        // genuinely never changed.
+        mockVscode.window.activeTextEditor = {
+            document: { uri: fileUri, getText: () => 'x', lineCount: 10 },
+            selection: new mockVscode.Range(6, 0, 7, 4)
+        };
+
+        try {
+            await commandsMap.get('chronos.showHistoryForSelection')();
+            await new Promise(r => setTimeout(r, 30));
+            assertEqual(warningTexts.length, 1, 'the user is told');
+            if (warningTexts.length > 0) {
+                assert(warningTexts[0].includes('none of the'), 'and the message counts the snapshots that exist');
+            }
+            assertEqual(panels, 0, 'no view opens with history that does not answer the question');
+        } finally {
+            mockVscode.window.createWebviewPanel = origPanel;
+            mockVscode.window.showWarningMessage = origWarning;
+        }
+    }
+
+    // ── Test 11: the snapshot's content is gone from storage ────────────────
+    console.log('\n[Test 11] A snapshot whose blob is missing is reported, not opened');
+    {
+        // The index can outlive the blobs it points at. Handing the missing file
+        // to vscode.diff opens an editor that fails with "file was not found",
+        // which says nothing about what is wrong.
+        let diffCalled = false;
+        const warnings = [];
+        const origExecute = mockVscode.commands.executeCommand;
+        const origWarning = mockVscode.window.showWarningMessage;
+        mockVscode.commands.executeCommand = async (cmd, ...args) => {
+            if (cmd === 'vscode.diff') diffCalled = true;
+            if (commandsMap.has(cmd)) return commandsMap.get(cmd)(...args);
+        };
+        mockVscode.window.showWarningMessage = (msg) => { warnings.push(String(msg)); };
+
+        const orphan = {
+            id: 'orphan-snapshot',
+            timestamp: 1700000000000,
+            filePath: 'target.ts',
+            eventType: 'save',
+            storagePath: 'blob-that-was-deleted',
+            relevantRange: { start: 2, end: 2 }
+        };
+
+        try {
+            await commandsMap.get('_chronos.openDiff')(orphan, fileUri.fsPath, { startLine: 2, endLine: 2 });
+            await new Promise(r => setTimeout(r, 20));
+
+            assertEqual(diffCalled, false, 'no diff editor is opened onto a file that is not there');
+            assertEqual(warnings.length, 1, 'the user is told instead');
+            if (warnings.length > 0) {
+                assert(warnings[0].includes('no longer in storage'), 'and the message says the content is gone');
+            }
+        } finally {
+            mockVscode.commands.executeCommand = origExecute;
+            mockVscode.window.showWarningMessage = origWarning;
         }
     }
 

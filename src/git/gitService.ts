@@ -1,7 +1,71 @@
 import * as cp from 'child_process';
 import * as vscode from 'vscode';
 import * as path from 'path';
-import { GitCommit, GitHistoryConfig } from '../types';
+import * as fs from 'fs';
+import * as os from 'os';
+import { GitCommit, GitHistoryConfig, GitRangeFailure, GitRangeHistory, GitRangeTruncation } from '../types';
+import { hunkNewRange, parseHunks } from '../utils/rangeMapper';
+
+/**
+ * Turns git's stderr into something that can be shown to the user. The strings
+ * matched here are git's own fatal messages, which is the only signal it gives
+ * for these cases.
+ */
+export function classifyGitRangeFailure(stderr: string, fileName: string): GitRangeFailure {
+    const detail = (stderr || '').trim();
+
+    if (/does not have any commits yet/i.test(detail)) {
+        return { reason: 'no-commits', message: 'This repository has no commits yet, so there is no line history to show.', detail };
+    }
+    if (/there is no path|no such path|exists on disk, but not in/i.test(detail)) {
+        return { reason: 'not-tracked', message: `${fileName} is not committed yet, so Git has no history for these lines.`, detail };
+    }
+    if (/has only \d+ lines/i.test(detail)) {
+        return { reason: 'bad-range', message: `Those lines do not exist in the committed version of ${fileName}.`, detail };
+    }
+    if (/not a git repository/i.test(detail)) {
+        return { reason: 'no-repo', message: `${fileName} is not inside a Git repository.`, detail };
+    }
+
+    return { reason: 'unknown', message: `Git could not read the line history for ${fileName}.`, detail };
+}
+
+/**
+ * Records where a commit's own change sits, in that commit's line numbers.
+ *
+ * `git log -L` prints a hunk header per commit, and those numbers are the only
+ * ones that mean anything inside that version of the file — a range taken from
+ * HEAD, or from the editor, does not apply to a commit from last year. Without
+ * this, anything wanting to reveal the change has nothing accurate to aim at.
+ */
+function withCommitRange(commit: GitCommit): GitCommit {
+    const hunks = parseHunks(commit.diff);
+    if (hunks.length === 0) return commit;
+
+    const range = hunkNewRange(hunks[0]);
+    return { ...commit, relevantRange: { start: range.startLine, end: range.endLine } };
+}
+
+/**
+ * True when the range's hunk in this commit is a pure insertion.
+ *
+ * That is what `git log -L` reports for the commit where a block first appears
+ * — and equally for one where it merely moved, which is why it cannot be taken
+ * as the block's origin without checking the file's own history.
+ */
+function blockAppearsIn(diff: string): boolean {
+    const lines = diff.split('\n');
+    const start = lines.findIndex(l => l.startsWith('@@'));
+    if (start === -1) return false;
+
+    let added = 0;
+    for (const line of lines.slice(start + 1)) {
+        if (line.startsWith('@@')) break;
+        if (line.startsWith('+')) added++;
+        else if (line.startsWith('-')) return false;
+    }
+    return added > 0;
+}
 
 export class GitService {
     
@@ -124,7 +188,7 @@ export class GitService {
         });
     }
 
-    async getHistoryForSelection(filePath: string, startLine: number, endLine: number, config: GitHistoryConfig): Promise<GitCommit[]> {
+    async getHistoryForSelection(filePath: string, startLine: number, endLine: number, config: GitHistoryConfig): Promise<GitRangeHistory> {
         const workspaceFolder = vscode.workspace.getWorkspaceFolder(vscode.Uri.file(filePath));
         if (!workspaceFolder) {
             throw new Error('File not in workspace');
@@ -134,13 +198,14 @@ export class GitService {
         // Note: git -L uses 1-based line numbers.
         const range = `${startLine + 1},${endLine + 1}`;
         const canonicalPath = await this.getCanonicalPath(filePath);
+        const limit = Math.max(1, config.maxCommits);
 
-        const args = ['-c', 'color.ui=false', 'log', `-L${range}:${canonicalPath}`];
-        
-        // Since we are parsing manually, we can't easily limit commits via git args for -L
-        // (git log -L doesn't always play nice with -n). We will limit during parsing.
+        // -L does honour -n, so the walk stops at the limit instead of producing
+        // history we would only throw away while parsing.
+        const args = ['-c', 'color.ui=false', 'log', `-n${limit}`, `-L${range}:${canonicalPath}`];
+        const fileName = path.basename(filePath);
 
-        return new Promise((resolve, reject) => {
+        return new Promise((resolve) => {
             const git = cp.spawn('git', args, { cwd: workspaceFolder.uri.fsPath, env: process.env });
             let stdout = '';
             let stderr = '';
@@ -150,17 +215,32 @@ export class GitService {
 
             git.on('error', err => {
                 console.warn('Git log failed to start:', err);
-                resolve([]);
+                resolve({
+                    commits: [],
+                    failure: {
+                        reason: 'git-missing',
+                        message: 'Git could not be started. Is it installed and on your PATH?',
+                        detail: String(err)
+                    }
+                });
             });
 
             git.on('close', code => {
                 if (code !== 0) {
-                    // git log -L can fail if lines are not tracked or file is new.
-                    console.warn('Git log -L failed:', stderr);
-                    resolve([]); 
+                    // Distinguish "git could not answer" from "there is no history
+                    // here": the two look identical to the caller otherwise.
+                    const failure = classifyGitRangeFailure(stderr, fileName);
+                    console.warn(`Git log -L failed (${failure.reason}):`, stderr);
+                    resolve({ commits: [], failure });
                     return;
                 }
-                resolve(this.parseGitLogL(stdout, config.maxCommits));
+                const commits = this.parseGitLogL(stdout, limit);
+                // Resolved after the promise settles would be too late, so the
+                // check happens here; it costs one `git log -n1` and only when
+                // the oldest commit looks like the block's beginning.
+                this.detectTruncation(commits, filePath, workspaceFolder.uri.fsPath, limit)
+                    .then(truncation => resolve(truncation ? { commits, truncation } : { commits }))
+                    .catch(() => resolve({ commits }));
             });
         });
     }
@@ -212,14 +292,10 @@ export class GitService {
 
         const canonicalPath = await this.getCanonicalPath(filePath);
         // -G looks for patches that match the regex. -p shows the patch.
-        const args = ['-c', 'color.ui=false', 'log', '-p', `-G${pattern}`, '--', canonicalPath];
-        
-        return new Promise((resolve) => {
-            const git = cp.spawn('git', args, { cwd: workspaceFolder.uri.fsPath, env: process.env });
-            let stdout = '';
-            git.stdout.on('data', data => stdout += data);
-            git.on('close', () => resolve(this.parseGitLogL(stdout, config.maxCommits)));
-        });
+        const limit = Math.max(1, config.maxCommits);
+        const args = ['-c', 'color.ui=false', 'log', '-p', `-n${limit}`, `-G${pattern}`, '--', canonicalPath];
+
+        return this.runLogSearch(args, workspaceFolder.uri.fsPath, limit, '-G');
     }
 
     /**
@@ -231,13 +307,193 @@ export class GitService {
         if (!workspaceFolder) return [];
 
         const canonicalPath = await this.getCanonicalPath(filePath);
-        const args = ['-c', 'color.ui=false', 'log', '-p', `-S${symbol}`, '--', canonicalPath];
-        
+        const limit = Math.max(1, config.maxCommits);
+        const args = ['-c', 'color.ui=false', 'log', '-p', `-n${limit}`, `-S${symbol}`, '--', canonicalPath];
+
+        return this.runLogSearch(args, workspaceFolder.uri.fsPath, limit, '-S');
+    }
+
+    /**
+     * The same pickaxe search, but over the whole repository.
+     *
+     * Scoped to one file it cannot answer the question that matters when a
+     * block's history stops at the file's first commit: the code was written
+     * somewhere else, under another path, and that is exactly what the
+     * file-scoped search excludes. The extension filters this to the same file
+     * extension so a symbol like `add` does not drag in every language in the
+     * tree.
+     */
+    async getHistoryBySymbolAnywhere(filePath: string, symbol: string, config: GitHistoryConfig): Promise<GitCommit[]> {
+        const workspaceFolder = vscode.workspace.getWorkspaceFolder(vscode.Uri.file(filePath));
+        if (!workspaceFolder) return [];
+
+        const limit = Math.max(1, config.maxCommits);
+        const extension = path.extname(filePath);
+        const pathspec = extension ? [`*${extension}`] : [];
+        const args = ['-c', 'color.ui=false', 'log', '-p', `-n${limit}`, `-S${symbol}`, '--', ...pathspec];
+
+        return this.runLogSearch(args, workspaceFolder.uri.fsPath, limit, '-S (repository-wide)');
+    }
+
+    /**
+     * Runs a `git log` search and parses it. A failure here is not worth a
+     * message of its own: these searches are fallbacks, so an empty result is
+     * the right answer for the caller.
+     */
+    private runLogSearch(args: string[], cwd: string, limit: number, label: string): Promise<GitCommit[]> {
+        return new Promise((resolve) => {
+            const git = cp.spawn('git', args, { cwd, env: process.env });
+            let stdout = '';
+            let stderr = '';
+
+            git.stdout.on('data', data => stdout += data);
+            git.stderr.on('data', data => stderr += data);
+
+            // Without this listener a failure to spawn git throws instead of
+            // resolving.
+            git.on('error', err => {
+                console.warn(`Git log ${label} failed to start:`, err);
+                resolve([]);
+            });
+
+            git.on('close', code => {
+                if (code !== 0) {
+                    console.warn(`Git log ${label} failed:`, stderr);
+                    resolve([]);
+                    return;
+                }
+                resolve(this.parseGitLogL(stdout, limit));
+            });
+        });
+    }
+
+    /**
+     * Hunk headers only (-U0) for two files on disk.
+     *
+     * Range tracking needs nothing but the @@ headers, so it must not pay for
+     * the full file context that getDiff produces for display.
+     */
+    async getHunks(file1: string, file2: string): Promise<string> {
+        const args = ['-c', 'color.ui=false', 'diff', '--unified=0', '--no-index', file1, file2];
+
+        return new Promise((resolve) => {
+            const git = cp.spawn('git', args, { env: process.env });
+            let stdout = '';
+            let stderr = '';
+
+            git.stdout.on('data', data => stdout += data);
+            git.stderr.on('data', data => stderr += data);
+
+            git.on('error', err => {
+                console.warn('Git diff (hunks) failed to start:', err);
+                resolve('');
+            });
+
+            git.on('close', code => {
+                // --no-index returns 1 when the files differ, >1 on error.
+                if (code !== null && code > 1) {
+                    console.warn('Git diff (hunks) failed:', stderr);
+                    resolve('');
+                    return;
+                }
+                resolve(stdout);
+            });
+        });
+    }
+
+    /**
+     * Hunk headers (-U0) between HEAD and the text the editor is showing.
+     *
+     * `getUncommittedHunks` compares HEAD with the file on disk, which is blind
+     * to edits that have not been saved yet: a selection made in a dirty buffer
+     * would then be resolved against lines that have already moved, and
+     * `git log -L` would answer about whatever HEAD happens to hold there. The
+     * buffer's own text is diffed against HEAD instead, so the mapping sees
+     * exactly what the user sees.
+     *
+     * Returns no hunks when the file is not in HEAD — there is nothing to map a
+     * range onto, and `getHistoryForSelection` reports that case itself.
+     */
+    async getUncommittedHunksForText(filePath: string, bufferText: string): Promise<string> {
+        const workspaceFolder = vscode.workspace.getWorkspaceFolder(vscode.Uri.file(filePath));
+        if (!workspaceFolder) return '';
+        const cwd = workspaceFolder.uri.fsPath;
+
+        let headContent: string;
+        try {
+            const canonicalPath = await this.getCanonicalPath(filePath);
+            const { stdout, stderr } = await this.runGit(['show', `HEAD:${canonicalPath}`], cwd);
+            if (!stdout && stderr) {
+                console.warn('Git show HEAD failed:', stderr);
+                return '';
+            }
+            headContent = stdout;
+        } catch (e) {
+            // Not in HEAD at all (a new file), or not a repository.
+            return '';
+        }
+
+        // git compares files, so both sides have to be files. They are written
+        // to a directory of their own and removed again straight away.
+        let dir: string | undefined;
+        try {
+            dir = fs.mkdtempSync(path.join(os.tmpdir(), 'chronos-buffer-'));
+            const base = path.basename(filePath);
+            const headFile = path.join(dir, `head-${base}`);
+            const bufferFile = path.join(dir, `buffer-${base}`);
+            fs.writeFileSync(headFile, headContent);
+            fs.writeFileSync(bufferFile, bufferText);
+            return await this.getHunks(headFile, bufferFile);
+        } catch (e) {
+            console.warn('Git diff (buffer hunks) failed:', e);
+            return '';
+        } finally {
+            if (dir) {
+                try {
+                    fs.rmSync(dir, { recursive: true, force: true });
+                } catch (e) {
+                    console.warn('Could not remove the temporary buffer diff directory:', e);
+                }
+            }
+        }
+    }
+
+    /**
+     * Hunk headers (-U0) between HEAD and the working tree for one file.
+     *
+     * Line numbers taken from the editor describe the buffer, but `git log -L`
+     * resolves them against HEAD. These hunks let a caller translate between
+     * the two.
+     */
+    async getUncommittedHunks(filePath: string): Promise<string> {
+        const workspaceFolder = vscode.workspace.getWorkspaceFolder(vscode.Uri.file(filePath));
+        if (!workspaceFolder) return '';
+
+        const canonicalPath = await this.getCanonicalPath(filePath);
+        const args = ['-c', 'color.ui=false', 'diff', '--unified=0', 'HEAD', '--', canonicalPath];
+
         return new Promise((resolve) => {
             const git = cp.spawn('git', args, { cwd: workspaceFolder.uri.fsPath, env: process.env });
             let stdout = '';
+            let stderr = '';
+
             git.stdout.on('data', data => stdout += data);
-            git.on('close', () => resolve(this.parseGitLogL(stdout, config.maxCommits)));
+            git.stderr.on('data', data => stderr += data);
+
+            git.on('error', err => {
+                console.warn('Git diff HEAD failed to start:', err);
+                resolve('');
+            });
+
+            git.on('close', code => {
+                if (code !== 0) {
+                    // No HEAD yet, or the file is untracked: nothing to map.
+                    console.warn('Git diff HEAD failed:', stderr);
+                    resolve('');
+                    return;
+                }
+                resolve(stdout);
+            });
         });
     }
 
@@ -387,6 +643,55 @@ export class GitService {
         }
     }
 
+    /**
+     * Whether a complete-looking `-L` answer is in fact cut short.
+     *
+     * The oldest commit it reached shows the range as a pure insertion, which
+     * happens both where a block is first written and where it merely moved. If
+     * the file itself has a commit older than that, the block's history did not
+     * begin there and the rest is simply out of `-L`'s reach. Callers can then
+     * say so instead of presenting a fragment as the whole story.
+     */
+    private async detectTruncation(
+        commits: GitCommit[],
+        filePath: string,
+        cwd: string,
+        limit: number
+    ): Promise<GitRangeTruncation | undefined> {
+        // A list cut off by -n is a different kind of incomplete, and the caller
+        // asked for that one.
+        if (commits.length === 0 || commits.length >= limit) return undefined;
+
+        const oldest = commits[commits.length - 1];
+        if (!blockAppearsIn(oldest.diff)) return undefined;
+
+        try {
+            // The file may well have had another name back there — that is one
+            // of the ways a block ends up looking newly written — so the path
+            // has to be the one that commit knew.
+            const pathThen = await this.getCanonicalPath(filePath, oldest.hash);
+            const { stdout } = await this.runGit(
+                ['log', '-n1', '--format=%H', '--follow', `${oldest.hash}~1`, '--', pathThen],
+                cwd
+            );
+            const previousFileCommit = stdout.trim().split('\n')[0];
+            if (previousFileCommit) {
+                // The file is older than the point where tracking stopped, so
+                // the block's history cannot begin there.
+                return { hash: oldest.hash, reason: 'block-moved', previousFileCommit };
+            }
+
+            // The file starts there. Either the code is genuinely new, or it
+            // came from another file — a move line tracking cannot follow. The
+            // caller decides, because telling the two apart needs a name.
+            return { hash: oldest.hash, reason: 'new-file', previousFileCommit: '' };
+        } catch (e) {
+            // `<hash>~1` does not exist: the oldest commit is the repository's
+            // first, so there is nothing beyond it to miss.
+            return undefined;
+        }
+    }
+
     private parseGitLogL(output: string, maxCommits: number): GitCommit[] {
         const commits: GitCommit[] = [];
         const lines = output.split('\n');
@@ -397,7 +702,7 @@ export class GitService {
         for (const line of lines) {
             if (line.startsWith('commit ')) {
                 if (currentCommit) {
-                    commits.push(currentCommit);
+                    commits.push(withCommitRange(currentCommit));
                     if (commits.length >= maxCommits) {
                         return commits;
                     }
@@ -426,8 +731,8 @@ export class GitService {
                 }
             }
         }
-        if (currentCommit) {
-            commits.push(currentCommit);
+        if (currentCommit && commits.length < maxCommits) {
+            commits.push(withCommitRange(currentCommit));
         }
         
         return commits;

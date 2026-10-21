@@ -14,9 +14,11 @@ Access all features via the context menu (right-click) in your editor or explore
 Chronos History
  ├─ Show History              (File-specific timeline)
  ├─ Show History for Selection (History for selected lines)
+ ├─ Show History for Context   (History for the enclosing function/class)
  ├───────────────────────────
  ├─ Show Git History          (Git commits for current file)
  ├─ Git History for Selection  (Git commits for selected lines)
+ ├─ Git History for Context    (Git commits for the enclosing function/class)
  ├───────────────────────────
  ├─ Show Project History      (Global timeline of all changes)
  ├─ Show History Graph        (Interactive visualization)
@@ -89,8 +91,9 @@ This opens a timeline of every automatic snapshot taken for the **currently acti
 #### 2. Show History for Selection (Chronos History)
 **A local "Time Machine" for your uncommitted work.**
 This is unique to the Chronos extension. It tracks changes locally on your machine, completely independent of Git.
-*   **How it works:** It filters your local Chronos snapshots to find only those where the selected lines were modified.
-*   **Side-by-Side View:** By default, clicking a snapshot opens VS Code's native side-by-side diff editor, scoped specifically to the selected lines.
+*   **How it works:** It filters your local Chronos snapshots to find only those where the selected lines were modified. The range is followed backwards through each snapshot's diff and, in Context mode, checked against the block's signature line — so a function that was moved or that drifted as the lines above it changed is found again where it actually is. When the block does not exist that far back, the trail stops at the snapshot where it first appears, and when no snapshot touched those lines Chronos says so instead of quietly showing the whole file's history.
+*   **Side-by-Side View:** By default, clicking a snapshot opens VS Code's native side-by-side diff editor on the whole file, scrolled to the lines you asked about and with them selected — so you keep the context around the block and its real line numbers. The same applies to the Git views and to the inline HTML preview: opening an entry never leaves you at the top of the file hunting for the change.
+*   **🎯 Show History for Context:** The same thing without selecting anything first — just put the cursor inside a function, a method or a class and Chronos resolves the enclosing block for you. It asks VS Code's own language providers for the block, so it works in every language you have an extension for (TypeScript, Python, Rust, Go, Java, C#, PHP…), and falls back to code folding when a language has no symbol provider. If you do have a selection that spans several functions, it widens to the smallest block that contains all of it. The resolved block is shown in the status bar, e.g. `Chronos: history for Method MyClass.render (lines 120-168)`.
 
 #### 3. Git History for Selection
 **The direct equivalent to JetBrains' "Show History for Selection".**
@@ -98,6 +101,11 @@ This feature integrates deeply with Git to track the evolution of specific lines
 *   **How it works:** It runs a `git log -L` command on the selected lines.
 *   **Diff View:** Select any commit to see exactly how those lines changed in that specific version (vs. its parent).
 *   **📝 Compare with Current:** A dedicated button to compare a specific commit's version of the lines with your current work-in-progress.
+*   **🎯 Git History for Context:** The same `git log -L`, but on the enclosing function or class resolved from your cursor instead of a manual selection.
+*   **Line numbers vs. HEAD:** `git log -L` resolves line numbers against the last commit, so Chronos first maps your editor's lines back through everything that changed since then — **including edits you have not saved**. Type thirty lines above a function, select it where it now sits, and you still get that function's history rather than the history of whatever HEAD holds at those line numbers.
+*   **When the trail is cut short:** `git log -L` follows lines by diff arithmetic, so a block that changed position reads as newly written and the walk stops there. Chronos notices when that happens — the lines look new but the file is older — and says so instead of presenting a fragment as the whole history. If the trail ends with the file's own first commit, the code came from somewhere else: Chronos searches the repository by the block's name, lists what it finds after the tracked commits, and tells you that part came from a name search (which cannot see edits to the block's body).
+*   **When `-L` cannot follow:** if the block is too new, or the file moved in a way Git cannot trace, Chronos searches the file's history for the block's name instead (`git log -S`, then the broader `-G`) and tells you the result came from a name search rather than from line tracking.
+*   **When Git cannot answer:** a file that is not committed yet, a repository with no commits, or a range that does not exist in the committed version are each reported for what they are, instead of looking like "no history".
 
 #### 4. Show Project History (with Deep Search)
 **The Global Activity Feed.**
@@ -175,6 +183,41 @@ Safely try out risky refactors without Git branches.
 
 ---
 
+## 🗄️ Storage Health & Moving Your History
+
+Chronos keeps two things side by side: an index of your snapshots, and the
+snapshot content itself. They can come apart — a storage path that changed, a
+drive that was not mounted, a folder cleaned out by hand — leaving entries that
+are listed but have nothing to open.
+
+*   **Run Diagnostics** (`Chronos: Run Diagnostics`) now reports **orphaned
+    entries**: how many entries point at content that is no longer on disk, and
+    which files they belong to.
+*   **Remove Orphaned History Entries...** clears those entries from the index.
+    It tells you how many and from which files first, asks you to confirm, and
+    never touches an entry whose content is still there — each one is re-checked
+    against disk immediately before it is dropped. Projects other than the ones
+    you have open are reported but left alone.
+*   **Show History for Context / for Selection** separates "none of your
+    snapshots changed this block" from "these versions cannot be read". If some
+    versions have lost their content, you get the ones that are still readable
+    plus a note about the rest; if none can be read, Chronos says that, with a
+    shortcut to the diagnostics — it no longer claims the block was never
+    touched.
+*   In the history view, an entry whose content is missing is shown as
+    *content unavailable* instead of being offered as a diff. That is a judgement
+    made each time the list is read, never written into the index: if the content
+    comes back, so does the entry.
+
+**Changing where history is stored** (`Chronos: Use External Shared Storage`, or
+editing `chronos.customStoragePath` by hand) does not move anything by itself —
+everything recorded under the old location simply stops being found. Chronos now
+tells you how many snapshots are at the old location and offers to **copy them
+across**. The copy is verified file by file and the original is never deleted, so
+a failed migration costs nothing; removing the old folder is left to you.
+
+---
+
 ## ⚙️ Configuration
 
 | Setting | Default | Description |
@@ -186,6 +229,7 @@ Safely try out risky refactors without Git branches.
 | `chronos.showDiffSideBySide` | `true` | Use native side-by-side diff editor. |
 | `chronos.maxDays` | `30` | Days to keep history before pruning (skips pinned snapshots). |
 | `chronos.saveInProjectFolder` | `false` | Save history in `.history/` inside your project. |
+| `chronos.customStoragePath` | `""` | Global folder for all history (e.g. `~/.chronos-history`). Changing it offers to copy existing history across; nothing is moved or deleted without asking. |
 
 ---
 

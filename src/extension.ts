@@ -4,7 +4,7 @@ import * as os from 'os';
 import * as fs from 'fs';
 import { HistoryStorage } from './storage';
 import { HistoryManager } from './historyManager';
-import { HistoryFilter } from './historyFilter';
+import { HistoryFilter, RangeAnchor } from './historyFilter';
 import { HistoryViewProvider } from './views/historyWebview';
 import { HistoryPanelProvider } from './views/historyPanelProvider';
 import { GraphViewProvider } from './views/graphWebview';
@@ -17,7 +17,9 @@ import { GitIgnoreService } from './git/gitIgnoreService';
 import { AIService } from './ai/aiService';
 import { BackupService } from './backup';
 import { ProjectRestorer } from './timeTravel';
-import { Snapshot, GitCommit } from './types';
+import { Snapshot, GitCommit, GitHistoryConfig, GitRangeHistory } from './types';
+import { resolveContextForEditor, ResolvedContext } from './utils/contextResolver';
+import { LineRange, mapRangeBackwards, parseHunks } from './utils/rangeMapper';
 
 let storage: HistoryStorage;
 let manager: HistoryManager;
@@ -69,6 +71,7 @@ export function activate(context: vscode.ExtensionContext) {
             divergenceProvider,
             vscode.commands.registerCommand('chronos.showHistory', showHistory),
             vscode.commands.registerCommand('chronos.showHistoryForSelection', showHistoryForSelection),
+            vscode.commands.registerCommand('chronos.showHistoryForContext', showHistoryForContext),
             vscode.commands.registerCommand('chronos.showProjectHistory', showProjectHistory),
             vscode.commands.registerCommand('chronos.showRecentChanges', showRecentChanges),
             vscode.commands.registerCommand('chronos.showGraph', showGraph),
@@ -100,6 +103,7 @@ export function activate(context: vscode.ExtensionContext) {
             vscode.commands.registerCommand('chronos.compareWithActive', compareWithActive),
             vscode.commands.registerCommand('chronos.showGitHistory', showGitHistory),
             vscode.commands.registerCommand('chronos.gitHistoryForSelection', gitHistoryForSelection),
+            vscode.commands.registerCommand('chronos.gitHistoryForContext', gitHistoryForContext),
             vscode.commands.registerCommand('chronos.restoreDeletedFile', restoreDeletedFile),
             vscode.commands.registerCommand('chronos.previewDeletedFile', previewDeletedFile),
             vscode.commands.registerCommand('chronos.generateCommitMessage', generateAICommitMessage),
@@ -257,11 +261,37 @@ export function activate(context: vscode.ExtensionContext) {
                 const defaultPath = process.platform === 'win32' 
                     ? path.join(process.env.LOCALAPPDATA || path.join(home, 'AppData', 'Local'), '.chronos-history')
                     : path.join(home, '.chronos-history');
-                    
+
+                const oldRoot = storage.getGlobalRoot();
+                const newRoot = vscode.Uri.file(defaultPath);
+
+                if (oldRoot.toString() === newRoot.toString()) {
+                    vscode.window.showInformationMessage(`Chronos: already using ${defaultPath}.`);
+                    return;
+                }
+
+                // Switching the root is not a move: everything recorded under the
+                // old one simply stops being found. Say how much that is and let
+                // the user decide before the setting changes.
+                const leftBehind = await storage.countSnapshotsUnder(oldRoot);
+                if (leftBehind > 0) {
+                    const choice = await vscode.window.showWarningMessage(
+                        `Chronos: ${leftBehind} snapshot${leftBehind === 1 ? '' : 's'} are stored at ${oldRoot.fsPath}. Switching to ${defaultPath} will not move them, so that history will no longer be listed.`,
+                        { modal: true },
+                        'Copy History Across',
+                        'Switch Without Copying'
+                    );
+                    if (!choice) return;
+                    if (choice === 'Copy History Across' && !(await copyHistoryAcross(oldRoot, newRoot))) {
+                        return;
+                    }
+                }
+
                 const config = vscode.workspace.getConfiguration('chronos');
                 await config.update('customStoragePath', defaultPath, vscode.ConfigurationTarget.Global);
                 vscode.window.showInformationMessage(`Chronos: Global storage path set to ${defaultPath}`);
             }),
+            vscode.commands.registerCommand('chronos.cleanOrphanedHistory', cleanOrphanedHistory),
             vscode.commands.registerCommand('chronos.showLogs', () => outputChannel.show(true)),
             vscode.commands.registerCommand('chronos.runDiagnostics', runDiagnostics),
             vscode.commands.registerCommand('chronos.exportHistory', exportHistory),
@@ -296,10 +326,18 @@ export function activate(context: vscode.ExtensionContext) {
         context.subscriptions.push(
             vscode.workspace.onDidChangeConfiguration(async e => {
                 if (e.affectsConfiguration('chronos.customStoragePath') || e.affectsConfiguration('chronos.saveInProjectFolder')) {
+                    // A path edited by hand in settings never passes through the
+                    // command, so the same "your old history is still over there"
+                    // warning has to happen here too.
+                    const previousRoot = storage.getGlobalRoot();
                     await storage.init();
+                    const currentRoot = storage.getGlobalRoot();
                     outputChannel.appendLine('Storage configuration changed, re-initialized.');
-                    // Refresh indices to ensure we see history from new location
                     activityProvider.refresh();
+
+                    if (previousRoot.toString() !== currentRoot.toString()) {
+                        await offerToCopyHistoryAcross(previousRoot, currentRoot);
+                    }
                 }
             })
         );
@@ -377,13 +415,7 @@ async function openDiff(snapshot: Snapshot, baseFilePath: string, currentSelecti
     if (!fileUri) return;
 
     const fileName = path.basename(fileUri.fsPath);
-    const ext = path.extname(fileUri.fsPath) || '.txt';
     const timestamp = new Date(snapshot.timestamp).toLocaleString();
-    const config = vscode.workspace.getConfiguration('chronos');
-    const diffOptions = { 
-        viewColumn: vscode.ViewColumn.Active, 
-        preview: true
-    };
 
     // Normalize currentSelection: handle both { startLine, endLine } (from webview)
     // and raw vscode.Selection serialized as { start: { line }, end: { line } } (from panel).
@@ -396,61 +428,57 @@ async function openDiff(snapshot: Snapshot, baseFilePath: string, currentSelecti
         }
     }
 
-    if (!snapshot.relevantRange && !normalizedSelection) {
-         try {
-            const snapshotUri = await storage.getSnapshotUri(snapshot, fileUri);
-            const title = `${fileName} (${timestamp}) ↔ ${fileName} (Current)`;
-            await vscode.commands.executeCommand('vscode.diff', snapshotUri, fileUri, title, diffOptions);
-        } catch (e) {
-            vscode.window.showErrorMessage('Failed to open diff: ' + e);
-        }
-        return;
-    }
+    // The right-hand side is the file on disk, so the range the user selected
+    // there is the one to reveal. The snapshot's own range is the fallback for a
+    // click that came from a list nobody filtered.
+    const target = normalizedSelection
+        ? { start: normalizedSelection.startLine, end: normalizedSelection.endLine }
+        : snapshot.relevantRange;
 
     try {
-        const snapshotUri = await storage.getSnapshotUri(snapshot, fileUri);
-        const snapshotData = await vscode.workspace.fs.readFile(snapshotUri);
-        const snapshotContent = new TextDecoder().decode(snapshotData);
-        const currentData = await vscode.workspace.fs.readFile(fileUri);
-        const currentContent = new TextDecoder().decode(currentData);
-        const snapRange = snapshot.relevantRange;
-        const currRange = normalizedSelection;
-
-        if (!snapRange && !currRange) {
-             const snapshotUri = await storage.getSnapshotUri(snapshot, fileUri);
-             const title = `${fileName} (${timestamp}) ↔ ${fileName} (Current)`;
-             await vscode.commands.executeCommand('vscode.diff', snapshotUri, fileUri, title, diffOptions);
-             return;
-        }
-
-        // If we have a relevantRange but no explicit currRange (e.g. fallback path),
-        // use the snapRange as an approximation for the current-file side.
-        const effectiveCurrRange = currRange ?? { startLine: snapRange!.start, endLine: snapRange!.end };
-        const effectiveSnapRange = snapRange ?? { start: currRange!.startLine, end: currRange!.endLine };
-
-        const snapLines = snapshotContent.split('\n').slice(effectiveSnapRange.start, effectiveSnapRange.end + 1).join('\n');
-        const currLines = currentContent.split('\n').slice(effectiveCurrRange.startLine, effectiveCurrRange.endLine + 1).join('\n');
-        const snapTemp = await createTempFile(`v_${snapshot.id.substring(0,8)}${ext}`, snapLines);
-        const currTemp = await createTempFile(`current_selection${ext}`, currLines);
-        
-        const title = `${fileName} (${timestamp}) ↔ ${fileName} (Current)`;
-        await vscode.commands.executeCommand('vscode.diff', snapTemp, currTemp, title, diffOptions);
+        const snapshotUri = await snapshotContentUri(snapshot, fileUri);
+        if (!snapshotUri) return;
+        const title = `${fileName} (${timestamp}) \u2194 ${fileName} (Current)`;
+        await vscode.commands.executeCommand('vscode.diff', snapshotUri, fileUri, title, showOptions(target));
     } catch (e) {
-        vscode.window.showErrorMessage('Failed to open selection diff: ' + e);
+        vscode.window.showErrorMessage('Failed to open diff: ' + e);
     }
 }
 
-async function openDiffGit(commit: GitCommit, filePath: string) {
+/**
+ * Diff editor options, revealing a line range when there is one to reveal.
+ *
+ * `selection` applies to the modified (right-hand) side; the diff editor keeps
+ * both sides aligned, so the matching region of the left side comes into view
+ * with it. The range stops at the start of its last line, which is enough to
+ * scroll to it without guessing that line's length.
+ */
+function showOptions(target?: { start: number, end: number }): vscode.TextDocumentShowOptions {
+    const options: vscode.TextDocumentShowOptions = {
+        viewColumn: vscode.ViewColumn.Active,
+        preview: true
+    };
+    if (!target) return options;
+
+    const start = Math.max(0, target.start);
+    const end = Math.max(start, target.end);
+    return { ...options, selection: new vscode.Range(start, 0, end, 0) };
+}
+
+async function openDiffGit(commit: GitCommit, filePath: string, selection?: { startLine: number, endLine: number }) {
     if (!commit) return;
     const workspaceFolder = vscode.workspace.getWorkspaceFolder(vscode.Uri.file(filePath));
     if (!workspaceFolder) return;
 
     const ext = path.extname(filePath) || '.txt';
     const fileName = path.basename(filePath);
-    const diffOptions = { 
-        viewColumn: vscode.ViewColumn.Active, 
-        preview: true
-    };
+
+    // Both sides are versions of that commit, so the commit's own hunk range is
+    // the only one whose line numbers apply. A range from the editor or from
+    // HEAD would point somewhere else entirely in an old version.
+    const target = commit.relevantRange
+        ?? (selection ? { start: selection.startLine, end: selection.endLine } : undefined);
+    const diffOptions = showOptions(target);
 
     try {
         const canonicalPath = await gitService.getCanonicalPath(filePath, commit.hash);
@@ -478,17 +506,23 @@ async function openDiffGit(commit: GitCommit, filePath: string) {
     }
 }
 
-async function openDiffGitCurrent(commit: GitCommit, filePath: string, selection?: {startLine: number, endLine: number}) {
+async function openDiffGitCurrent(commit: GitCommit, filePath: string, selection?: ViewRange) {
     if (!commit) return;
     const ext = path.extname(filePath) || '.txt';
     const fileName = path.basename(filePath);
     const workspaceFolder = vscode.workspace.getWorkspaceFolder(vscode.Uri.file(filePath));
     if (!workspaceFolder) return;
 
-    const diffOptions = { 
-        viewColumn: vscode.ViewColumn.Active, 
-        preview: true
-    };
+    // The right-hand side is the file on disk, including uncommitted edits, so
+    // the range to reveal is the one from the editor buffer — not the HEAD range
+    // that `git log -L` was given.
+    const target = selection
+        ? {
+            start: selection.bufferStartLine ?? selection.startLine,
+            end: selection.bufferEndLine ?? selection.endLine
+        }
+        : undefined;
+    const diffOptions = showOptions(target);
 
     try {
         // 1. Get historical version content
@@ -501,9 +535,6 @@ async function openDiffGitCurrent(commit: GitCommit, filePath: string, selection
         
         // Use vscode.diff with the full file URI to allow editing of the current file
         await vscode.commands.executeCommand('vscode.diff', leftTemp, vscode.Uri.file(filePath), title, diffOptions);
-        
-        // Optional: We could attempt to reveal the selection in the active editor after opening, 
-        // but vscode.diff doesn't provide a direct way to do that for both sides reliably.
     } catch (e) {
         vscode.window.showErrorMessage('Failed to open diff with current: ' + e);
     }
@@ -601,8 +632,9 @@ async function compareTwoSnapshots(s1: Snapshot, s2: Snapshot) {
     try {
         const uri1 = resolveSnapshotUri(snap1.filePath);
         const uri2 = resolveSnapshotUri(snap2.filePath);
-        const snap1Uri = await storage.getSnapshotUri(snap1, uri1);
-        const snap2Uri = await storage.getSnapshotUri(snap2, uri2);
+        const snap1Uri = await snapshotContentUri(snap1, uri1);
+        const snap2Uri = await snapshotContentUri(snap2, uri2);
+        if (!snap1Uri || !snap2Uri) return;
 
         const fileName1 = path.basename(snap1.filePath);
         const fileName2 = path.basename(snap2.filePath);
@@ -647,33 +679,151 @@ async function showHistory(uri?: vscode.Uri, selection?: vscode.Range) {
 }
 
 async function showHistoryForSelection() {
-    await ensureStorage();
     const editor = vscode.window.activeTextEditor;
     if (!editor) return;
+    await showLocalHistoryForRange(editor, editor.selection);
+}
+
+async function showHistoryForContext() {
+    const editor = vscode.window.activeTextEditor;
+    if (!editor) return;
+    const context = await resolveContextForEditor(editor);
+    announceContext(context);
+    await showLocalHistoryForRange(editor, context.range, { signatureLine: context.anchor.signatureLine });
+}
+
+/**
+ * Shared path for "History for Selection" and "History for Context": both end
+ * up filtering the local timeline down to a line range.
+ */
+async function showLocalHistoryForRange(editor: vscode.TextEditor, range: vscode.Range, anchor?: RangeAnchor) {
+    await ensureStorage();
     const uri = editor.document.uri;
     const history = await storage.getHistoryForFile(uri);
-    const sel = editor.selection;
     const docLineCount = editor.document.lineCount;
 
-    // When the entire file is selected (Select All), skip selection-filtering
-    // and show the same result as Show History — a full-file timeline.
-    const isFullFile = sel.start.line === 0 && sel.end.line >= docLineCount - 1;
+    // When the entire file is covered (Select All, or a context that resolved to
+    // the whole module), skip range-filtering and show the same result as
+    // Show History — a full-file timeline.
+    const isFullFile = range.start.line === 0 && range.end.line >= docLineCount - 1;
     if (isFullFile) {
         showHistory(uri);
         return;
     }
 
     try {
-        const filtered = await historyFilter.filterHistoryForSelection(history, uri, sel);
+        const { relevant: filtered, unreadable } = await historyFilter.filterHistoryForRange(history, uri, range, anchor);
+        const block = anchor?.signatureLine
+            ? `"${truncate(anchor.signatureLine, 40)}"`
+            : `lines ${range.start.line + 1}-${inclusiveEndLine(range) + 1}`;
+
+        if (filtered.length === 0) {
+            if (history.length === 0) {
+                // Nothing was ever snapshotted for this file. That is not a
+                // statement about the range, and an empty panel says it far
+                // better than a notification in the corner, which is easy to
+                // miss entirely — it just looks like the command did nothing.
+                showHistory(uri);
+                return;
+            }
+
+            // An empty result has two very different causes, and saying the
+            // wrong one sends the user looking for history that is right there,
+            // or stops them looking for content that is gone.
+            if (unreadable.length > 0) {
+                const n = unreadable.length;
+                const readable = history.length - n;
+                const alsoChecked = readable > 0
+                    ? ` The other ${readable} did not change it.`
+                    : '';
+                const choice = await vscode.window.showWarningMessage(
+                    `Chronos: ${n} of the ${history.length} snapshots of this file cannot be read — their content is no longer in storage, so there is no way to tell whether they changed ${block}.${alsoChecked}`,
+                    'Show Full History',
+                    'Run Diagnostics'
+                );
+                if (choice === 'Show Full History') showHistory(uri);
+                else if (choice === 'Run Diagnostics') vscode.commands.executeCommand('chronos.runDiagnostics');
+                return;
+            }
+
+            // There is history, all of it readable, and none of it touched this
+            // block. Worth saying, and worth saying loudly enough to be noticed.
+            const choice = await vscode.window.showWarningMessage(
+                `Chronos: none of the ${history.length} snapshots of this file changed ${block}.`,
+                'Show Full History'
+            );
+            if (choice === 'Show Full History') showHistory(uri);
+            return;
+        }
+        if (unreadable.length > 0) {
+            // The list is usable but incomplete. A status bar message says so
+            // without putting a dialog in front of a result the user asked for.
+            vscode.window.setStatusBarMessage(
+                `Chronos: ${unreadable.length} snapshot(s) of this file could not be read — content missing from storage.`,
+                6000
+            );
+        }
+
         if (vscode.workspace.getConfiguration('chronos').get('viewMode') === 'panel') {
-            panelProvider.showLocalHistory(filtered, uri.fsPath, editor.selection, aiService.isConfigured());
+            panelProvider.showLocalHistory(filtered, uri.fsPath, range, aiService.isConfigured());
             vscode.commands.executeCommand('chronos.historyPanel.focus');
         } else {
-            viewProvider.show(filtered, uri, (s: Snapshot) => getDiffForSnapshot(s, uri), sel, (q: string, sc: boolean) => storage.search(q, sc), (s: Snapshot) => explainSnapshot(s, uri), (q: string) => manager.semanticSearch(q), (id: string) => manager.togglePin(id), (s1: Snapshot, s2: Snapshot) => compareSnapshots(s1, s2), undefined, aiService.isConfigured());
+            viewProvider.show(filtered, uri, (s: Snapshot) => getDiffForSnapshot(s, uri), range, (q: string, sc: boolean) => storage.search(q, sc), (s: Snapshot) => explainSnapshot(s, uri), (q: string) => manager.semanticSearch(q), (id: string) => manager.togglePin(id), (s1: Snapshot, s2: Snapshot) => compareSnapshots(s1, s2), undefined, aiService.isConfigured());
         }
     } catch (e) {
         vscode.window.showErrorMessage('Failed to show selection history: ' + e);
     }
+}
+
+/**
+ * A snapshot's content on disk, or nothing plus an explanation.
+ *
+ * The index can outlive the blobs it points at — a storage path that changed
+ * under it, a prune, a manual cleanup — and handing a missing file to
+ * `vscode.diff` opens an editor that fails with "the file was not found",
+ * which tells the user neither what is missing nor why.
+ */
+async function snapshotContentUri(snapshot: Snapshot, fileUri: vscode.Uri): Promise<vscode.Uri | undefined> {
+    let uri: vscode.Uri;
+    try {
+        uri = await storage.getSnapshotUri(snapshot, fileUri);
+    } catch (e) {
+        vscode.window.showErrorMessage(`Chronos: ${e instanceof Error ? e.message : String(e)}`);
+        return undefined;
+    }
+
+    try {
+        await vscode.workspace.fs.stat(uri);
+        return uri;
+    } catch {
+        const when = new Date(snapshot.timestamp).toLocaleString();
+        const choice = await vscode.window.showWarningMessage(
+            `Chronos: the content of the snapshot from ${when} is no longer in storage, so there is nothing to compare. The entry is still listed, but its file is gone.`,
+            'Run Diagnostics'
+        );
+        if (choice === 'Run Diagnostics') vscode.commands.executeCommand('chronos.runDiagnostics');
+        return undefined;
+    }
+}
+
+function truncate(text: string, max: number): string {
+    const trimmed = text.trim();
+    return trimmed.length <= max ? trimmed : `${trimmed.slice(0, max - 1)}\u2026`;
+}
+
+/** Last line a range actually covers, accounting for VS Code's exclusive end. */
+function inclusiveEndLine(range: vscode.Range): number {
+    if (range.end.character === 0 && range.end.line > range.start.line) return range.end.line - 1;
+    return range.end.line;
+}
+
+/** Tells the user which block the history was resolved to, and how. */
+function announceContext(context: ResolvedContext) {
+    const lines = `lines ${context.startLine + 1}-${context.endLine + 1}`;
+    const where = context.anchor.namePath
+        ? `${context.anchor.kind || 'Block'} ${context.anchor.namePath} (${lines})`
+        : lines;
+    vscode.window.setStatusBarMessage(`$(history) Chronos: history for ${where}`, 5000);
 }
 
 async function showProjectHistory() {
@@ -739,7 +889,8 @@ async function compareToCurrent(snapshotId: string, filePath?: string) {
     const snapshot = history.find(s => s.id === snapshotId);
     if (!snapshot) return;
     try {
-        const snapshotUri = await storage.getSnapshotUri(snapshot, fileUri);
+        const snapshotUri = await snapshotContentUri(snapshot, fileUri);
+        if (!snapshotUri) return;
         const fileName = path.basename(fileUri.fsPath);
         const timestamp = new Date(snapshot.timestamp).toLocaleString();
         const title = `${fileName} (${timestamp}) ↔ ${fileName} (Current)`;
@@ -761,7 +912,8 @@ async function compareWithActive(snapshot: Snapshot) {
     const originalUri = resolveSnapshotUri(snapshot.filePath);
 
     try {
-        const snapshotUri = await storage.getSnapshotUri(snapshot, originalUri);
+        const snapshotUri = await snapshotContentUri(snapshot, originalUri);
+        if (!snapshotUri) return;
         const sourceName = path.basename(snapshot.filePath);
         const targetName = path.basename(targetUri.fsPath);
         const timestamp = new Date(snapshot.timestamp).toLocaleString();
@@ -826,26 +978,305 @@ async function gitHistoryForSelection() {
     if (!editor) return;
     const selection = editor.selection;
     if (selection.isEmpty) return;
+    await showGitHistoryForRange(editor, selection.start.line, selection.end.line);
+}
+
+async function gitHistoryForContext() {
+    const editor = vscode.window.activeTextEditor;
+    if (!editor) return;
+    const context = await resolveContextForEditor(editor);
+    announceContext(context);
+    await showGitHistoryForRange(editor, context.startLine, context.endLine, context.anchor.namePath);
+}
+
+const GIT_HISTORY_CONFIG: GitHistoryConfig = { maxCommits: 100, followRenames: true, dateFormat: 'yyyy-MM-dd HH:mm' };
+
+/**
+ * Shared path for "Git History for Selection" and "Git History for Context":
+ * both resolve to a line range handed to `git log -L`.
+ */
+async function showGitHistoryForRange(editor: vscode.TextEditor, startLine: number, endLine: number, namePath?: string) {
+    const filePath = editor.document.uri.fsPath;
+    // Line numbers from the editor describe the buffer, but `git log -L` resolves
+    // them against HEAD, so anything changed above the range — saved or not —
+    // would shift it.
+    const headRange = await mapRangeToHead(editor.document, { startLine, endLine });
+    const range: ViewRange = { ...headRange, bufferStartLine: startLine, bufferEndLine: endLine };
     try {
-        const commits = await gitService.getHistoryForSelection(editor.document.uri.fsPath, selection.start.line, selection.end.line, { maxCommits: 100, followRenames: true, dateFormat: 'yyyy-MM-dd HH:mm' });
-        if (commits.length > 0) {
-            if (vscode.workspace.getConfiguration('chronos').get('viewMode') === 'panel') {
-                panelProvider.showGitHistory(commits, editor.document.uri.fsPath, { startLine: selection.start.line, endLine: selection.end.line }, aiService.isConfigured());
-                vscode.commands.executeCommand('chronos.historyPanel.focus');
-            } else {
-                viewProvider.showGit(
-                    commits, 
-                    editor.document.uri.fsPath, 
-                    { startLine: selection.start.line, endLine: selection.end.line },
-                    (c: GitCommit) => explainGitCommit(c),
-                    (h1: string, h2: string) => gitService.getCommitDiff(h1, h2, editor.document.uri.fsPath, selection.start.line, selection.end.line),
-                    aiService.isConfigured()
-                );
-            }
+        const history = await gitService.getHistoryForSelection(filePath, range.startLine, range.endLine, GIT_HISTORY_CONFIG);
+
+        if (history.failure) {
+            // Git could not answer. Saying "no history" here would be a lie.
+            outputChannel.appendLine(`[Git] log -L failed (${history.failure.reason}): ${history.failure.detail}`);
+            vscode.window.showWarningMessage(`Chronos: ${history.failure.message}`);
+            return;
         }
+
+        if (history.commits.length > 0) {
+            if (history.truncation) {
+                await presentTruncatedGitHistory(history, filePath, range, namePath);
+                return;
+            }
+            presentGitHistory(history.commits, filePath, range);
+            return;
+        }
+
+        // Nothing followed those lines. A named block can still be traced by its
+        // name, which survives the moves and rewrites that -L cannot follow.
+        const traced = namePath ? await traceSymbolHistory(filePath, namePath) : undefined;
+        if (traced) {
+            vscode.window.setStatusBarMessage(`$(history) Chronos: no line history; showing commits that ${traced.how} "${traced.symbol}"`, 8000);
+            presentGitHistory(traced.commits, filePath, undefined);
+            return;
+        }
+
+        vscode.window.setStatusBarMessage(`$(history) Chronos: no git history for lines ${range.startLine + 1}-${range.endLine + 1}`, 5000);
     } catch (e) {
         vscode.window.showErrorMessage('Failed to show git history for selection: ' + e);
     }
+}
+
+/**
+ * Presents a `-L` answer that stops short, together with whatever a name search
+ * can add, and says which is which.
+ *
+ * Line tracking loses a block where it changed position: the lines read as
+ * newly written, so the walk ends there even though the file is older. Showing
+ * that fragment silently is the worst option — it looks like the whole history.
+ * The name search cannot see edits to a block's body, so what it adds is
+ * genuinely a supplement, and the message says so rather than implying the list
+ * is now complete.
+ */
+async function presentTruncatedGitHistory(
+    history: GitRangeHistory,
+    filePath: string,
+    range: ViewRange,
+    namePath?: string
+): Promise<void> {
+    const stopsAt = history.truncation!.hash.slice(0, 8);
+    // Where the trail ends with the file itself, the rest of the block's life
+    // is under some other path, so the search has to leave this file behind.
+    const scope = history.truncation!.reason === 'new-file' ? 'anywhere' : 'this-file';
+    const traced = namePath ? await traceSymbolHistory(filePath, namePath, scope) : undefined;
+
+    const known = new Set(history.commits.map(c => c.hash));
+    const extra = (traced?.commits ?? []).filter(c => !known.has(c.hash));
+
+    // The supplement is older than the point where tracking stopped, so it goes
+    // after the tracked commits and the list stays newest-first.
+    presentGitHistory([...history.commits, ...extra], filePath, range);
+
+    if (extra.length > 0) {
+        const where = history.truncation!.reason === 'new-file'
+            ? `${stopsAt} is the first commit of this file, so anything older lived somewhere else`
+            : `line tracking stops at ${stopsAt}, where these lines look newly written — usually because the block moved`;
+        tellAboutTruncation(
+            `Chronos: ${where}. ${extra.length} older commit${extra.length === 1 ? '' : 's'} that ${traced!.how} "${traced!.symbol}" ${extra.length === 1 ? 'is' : 'are'} listed after it, found by name. Edits to the block's body before that cannot be found this way.`
+        );
+        return;
+    }
+
+    // Nothing corroborates a gap for a file that simply starts here, and a new
+    // file is the ordinary case: saying anything would be crying wolf.
+    if (history.truncation!.reason === 'new-file') return;
+
+    const searched = namePath ? ' A search by name found nothing older.' : '';
+    tellAboutTruncation(
+        `Chronos: line tracking stops at ${stopsAt}, where these lines look newly written — usually because the block moved. The file has history older than that which cannot be followed by line.${searched}`
+    );
+}
+
+/**
+ * Says a thing about the history just shown, without making the command wait.
+ *
+ * The panel is already on screen by this point, so awaiting the notification
+ * would only keep the command's promise pending until someone dismisses a
+ * message they may never look at — and anything waiting on that command would
+ * sit there with it.
+ */
+function tellAboutTruncation(message: string): void {
+    void vscode.window.showInformationMessage(message, 'Show Full File History')
+        .then(choice => {
+            if (choice === 'Show Full File History') {
+                void vscode.commands.executeCommand('chronos.showGitHistory');
+            }
+        });
+}
+
+function presentGitHistory(commits: GitCommit[], filePath: string, range?: ViewRange) {
+    if (vscode.workspace.getConfiguration('chronos').get('viewMode') === 'panel') {
+        panelProvider.showGitHistory(commits, filePath, range, aiService.isConfigured());
+        vscode.commands.executeCommand('chronos.historyPanel.focus');
+        return;
+    }
+    viewProvider.showGit(
+        commits, 
+        filePath, 
+        range,
+        (c: GitCommit) => explainGitCommit(c),
+        // -1,-1 tells getCommitDiff to diff the whole file.
+        (h1: string, h2: string) => gitService.getCommitDiff(h1, h2, filePath, range?.startLine ?? -1, range?.endLine ?? -1),
+        aiService.isConfigured()
+    );
+}
+
+/**
+ * Last-resort trace of a named block through the file's history.
+ *
+ * The pickaxe (-S) counts occurrences, so it finds where the name was
+ * introduced or removed — few results, high confidence. Failing that, -G
+ * matches any patch mentioning it, which is broader but survives rewrites.
+ */
+async function traceSymbolHistory(
+    filePath: string,
+    namePath: string,
+    scope: 'this-file' | 'anywhere' = 'this-file'
+): Promise<{ commits: GitCommit[], symbol: string, how: string } | undefined> {
+    const symbol = namePath.split('.').pop() ?? '';
+    if (symbol.length === 0) return undefined;
+
+    if (scope === 'anywhere') {
+        // The block's history stops where its file begins, so whatever came
+        // before is under another path and a file-scoped search cannot see it.
+        const elsewhere = await gitService.getHistoryBySymbolAnywhere(filePath, symbol, GIT_HISTORY_CONFIG);
+        if (elsewhere.length > 0) return { commits: elsewhere, symbol, how: 'added or removed' };
+        return undefined;
+    }
+
+    const introduced = await gitService.getHistoryBySymbol(filePath, symbol, GIT_HISTORY_CONFIG);
+    if (introduced.length > 0) return { commits: introduced, symbol, how: 'added or removed' };
+
+    const mentioned = await gitService.getHistoryBySearch(filePath, escapeRegExp(symbol), GIT_HISTORY_CONFIG);
+    if (mentioned.length > 0) return { commits: mentioned, symbol, how: 'mention' };
+
+    return undefined;
+}
+
+function escapeRegExp(text: string): string {
+    return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/**
+ * A line range as the views receive it: HEAD's numbers, which is what git was
+ * asked about, plus the editor's own, which is what applies to the file on disk.
+ */
+interface ViewRange extends LineRange {
+    bufferStartLine: number;
+    bufferEndLine: number;
+}
+
+/**
+ * Translates a range taken from the editor buffer into HEAD's line numbers by
+ * mapping it back through whatever has changed since HEAD.
+ *
+ * "Since HEAD" has to include edits that are not saved. The working tree alone
+ * is blind to them, so a selection in a dirty buffer would be sent to
+ * `git log -L` as literal line numbers and answered with the history of
+ * whatever HEAD holds there — a plausible-looking list about the wrong lines.
+ * When the document is dirty its own text is diffed against HEAD instead.
+ */
+async function mapRangeToHead(document: vscode.TextDocument, range: LineRange): Promise<LineRange> {
+    const filePath = document.uri.fsPath;
+    try {
+        const raw = document.isDirty
+            ? await gitService.getUncommittedHunksForText(filePath, document.getText())
+            : await gitService.getUncommittedHunks(filePath);
+        const hunks = parseHunks(raw);
+        if (hunks.length === 0) return range;
+        const mapped = mapRangeBackwards(range, hunks);
+        const against = document.isDirty ? 'unsaved buffer' : 'working tree';
+        console.log(`[Chronos] Mapped buffer range ${range.startLine}-${range.endLine} onto HEAD as ${mapped.startLine}-${mapped.endLine} (via the ${against})`);
+        return mapped;
+    } catch (e) {
+        console.warn('[Chronos] Could not map the range onto HEAD:', e);
+        return range;
+    }
+}
+
+/**
+ * Copies a storage root to the new location, reporting what happened.
+ *
+ * Returns false when nothing was copied and the caller should not go ahead
+ * with the switch — a half-migrated store with the setting already changed is
+ * the state that loses history.
+ */
+async function copyHistoryAcross(from: vscode.Uri, to: vscode.Uri): Promise<boolean> {
+    const result = await vscode.window.withProgress(
+        { location: vscode.ProgressLocation.Notification, title: `Chronos: copying history to ${to.fsPath}...` },
+        () => storage.migrateStorage(from, to)
+    );
+
+    if (result.failed.length > 0) {
+        const choice = await vscode.window.showErrorMessage(
+            `Chronos: ${result.failed.length} file${result.failed.length === 1 ? '' : 's'} could not be copied to ${to.fsPath} (first failure: ${result.failed[0].path} — ${result.failed[0].reason}). Nothing was removed from ${from.fsPath}.`,
+            { modal: true },
+            'Switch Anyway'
+        );
+        return choice === 'Switch Anyway';
+    }
+
+    const skipped = result.skipped > 0 ? `, ${result.skipped} already present` : '';
+    vscode.window.showInformationMessage(
+        `Chronos: copied ${result.copied} file${result.copied === 1 ? '' : 's'} to ${to.fsPath}${skipped}. The originals are still at ${from.fsPath}.`
+    );
+    return true;
+}
+
+/** Offers the copy after the fact, for a path changed outside the command. */
+async function offerToCopyHistoryAcross(from: vscode.Uri, to: vscode.Uri): Promise<void> {
+    const leftBehind = await storage.countSnapshotsUnder(from);
+    if (leftBehind === 0) return;
+
+    const choice = await vscode.window.showWarningMessage(
+        `Chronos: history storage now points at ${to.fsPath}. ${leftBehind} snapshot${leftBehind === 1 ? '' : 's'} remain at ${from.fsPath} and are no longer listed.`,
+        'Copy History Across',
+        'Keep Them Separate'
+    );
+    if (choice === 'Copy History Across') {
+        await copyHistoryAcross(from, to);
+        await storage.getProjectHistory(true);
+        activityProvider.refresh();
+    }
+}
+
+/**
+ * Clears index entries whose snapshot content is gone from disk.
+ *
+ * This deletes history, so it says exactly how much and from which files
+ * first, and the confirmation is modal. Entries that still have their content
+ * are never candidates, and `removeOrphanedEntries` re-checks each one against
+ * disk before dropping it.
+ */
+async function cleanOrphanedHistory() {
+    const reports = await storage.findOrphanedEntries();
+    const own = reports.filter(r => r.own);
+
+    if (own.length === 0) {
+        const elsewhere = reports.reduce((n, r) => n + r.total, 0);
+        vscode.window.showInformationMessage(
+            elsewhere > 0
+                ? `Chronos: no orphaned entries in this project. ${elsewhere} belong to other projects in the shared store and are left alone.`
+                : 'Chronos: every history entry still has its content on disk.'
+        );
+        return;
+    }
+
+    const total = own.reduce((n, r) => n + r.total, 0);
+    const files = own.flatMap(r => r.files);
+    const shown = files.slice(0, 10).map(f => `  • ${f.filePath} — ${f.snapshots.length}`).join('\n');
+    const more = files.length > 10 ? `\n  ...and ${files.length - 10} more file(s)` : '';
+
+    const choice = await vscode.window.showWarningMessage(
+        `Chronos: ${total} history entr${total === 1 ? 'y' : 'ies'} point at content that is no longer on disk, across ${files.length} file${files.length === 1 ? '' : 's'}:\n\n${shown}${more}\n\nRemoving them deletes those entries from the history index for good. Entries whose content is still there are not touched.`,
+        { modal: true },
+        'Remove Them'
+    );
+    if (choice !== 'Remove Them') return;
+
+    const { removed, keptWithContent } = await storage.removeOrphanedEntries(own);
+    const kept = keptWithContent > 0 ? ` ${keptWithContent} were kept because their content was found after all.` : '';
+    vscode.window.showInformationMessage(`Chronos: removed ${removed} orphaned entr${removed === 1 ? 'y' : 'ies'} from the index.${kept}`);
+    activityProvider.refresh();
 }
 
 async function runDiagnostics() {
