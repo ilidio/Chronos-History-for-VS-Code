@@ -1,234 +1,337 @@
 import * as vscode from 'vscode';
 import { HistoryStorage } from './storage';
 import { GitService } from './git/gitService';
-import { Snapshot } from './types';
+import { Snapshot, RangeAnchoring } from './types';
+import {
+    DiffHunk,
+    LineRange,
+    clampRange,
+    isRangeRelevant,
+    mapRangeBackwards,
+    parseHunks
+} from './utils/rangeMapper';
 
-interface DiffHunk {
-    oldStart: number;
-    oldLines: number;
-    newStart: number;
-    newLines: number;
-    touchedLines: Set<number>;
+/** What identifies the tracked block, beyond its position. */
+export interface RangeAnchor {
+    /** First non-blank line of the block, e.g. "render() {". */
+    signatureLine: string;
+}
+
+/** What a range walk found, and what it could not look at. */
+export interface RangeHistoryResult {
+    /** Snapshots where the range changed, newest first. */
+    relevant: Snapshot[];
+    /**
+     * Snapshots that could not be read: listed in the index, content gone from
+     * storage. They are not evidence that the block did not change — nothing
+     * can be said about them at all, which is a different answer and has to be
+     * reported as one.
+     */
+    unreadable: Snapshot[];
+}
+
+/** Internal result of placing a range inside one snapshot. */
+interface Landing {
+    range: LineRange;
+    anchoring: RangeAnchoring | 'lost';
 }
 
 export class HistoryFilter {
+    /**
+     * Hunks between two snapshots, keyed by their ids. Snapshot content never
+     * changes, so this is valid for the lifetime of the session.
+     */
+    private hunkCache = new Map<string, DiffHunk[]>();
+
     constructor(
         private storage: HistoryStorage,
         private gitService: GitService
     ) {}
 
-        async filterHistoryForSelection(
-            history: Snapshot[], 
-            fileUri: vscode.Uri, 
-            selection: vscode.Range
-        ): Promise<Snapshot[]> {
-            if (history.length === 0) return [];
-    
-            console.log(`[HistoryFilter] Filtering ${history.length} snapshots for ${fileUri.fsPath} selection ${selection.start.line}-${selection.end.line}`);
-    
-            // Sort new -> old
-            const sortedHistory = [...history].sort((a, b) => b.timestamp - a.timestamp);
-            
-            const relevantSnapshots: Snapshot[] = [];
-            let currentRange = selection;
-    
-            // Step 0: Map selection from Current File (disk) to Newest Snapshot
-            try {
-                const newestSnapshot = sortedHistory[0];
-                const newestSnapshotUri = await this.storage.getSnapshotUri(newestSnapshot, fileUri);
-                
-                const diff = await this.gitService.getDiff(newestSnapshotUri.fsPath, fileUri.fsPath);
-                const hunks = this.parseHunks(diff);
-                
-                currentRange = this.mapRangeBackwards(currentRange, hunks);
-                console.log(`[HistoryFilter] Initial map (Current -> Newest): ${selection.start.line}-${selection.end.line} -> ${currentRange.start.line}-${currentRange.end.line}`);
-            } catch (e) {
-                console.error('[HistoryFilter] Error mapping initial range:', e);
-            }
-    
-            // Step 1: Iterate backwards through history
-            for (let i = 0; i < sortedHistory.length - 1; i++) {
-                const newSnapshot = sortedHistory[i];
-                const oldSnapshot = sortedHistory[i + 1];
-    
-                try {
-                    const newUri = await this.storage.getSnapshotUri(newSnapshot, fileUri);
-                    const oldUri = await this.storage.getSnapshotUri(oldSnapshot, fileUri);
-    
-                    const diff = await this.gitService.getDiff(oldUri.fsPath, newUri.fsPath);
-                    const hunks = this.parseHunks(diff);
-    
-                    if (this.isRelevant(currentRange, hunks)) {
-                        // currentRange uses VS Code's exclusive-end convention: when end.character === 0
-                        // the end.line is one past the actual last line. Store inclusive end.
-                        const inclusiveEnd = (currentRange.end.character === 0 && currentRange.end.line > currentRange.start.line)
-                            ? currentRange.end.line - 1
-                            : currentRange.end.line;
-                        relevantSnapshots.push({
-                            ...newSnapshot,
-                            relevantRange: { start: currentRange.start.line, end: inclusiveEnd }
-                        });
-                        console.log(`[HistoryFilter] Relevant snapshot found: ${newSnapshot.id} (${newSnapshot.label || newSnapshot.eventType}) range ${currentRange.start.line}-${inclusiveEnd}`);
-                    }
-    
-                    const prevRange = currentRange;
-                    currentRange = this.mapRangeBackwards(currentRange, hunks);
-                    // console.log(`[HistoryFilter] Mapped range ${prevRange.start.line}-${prevRange.end.line} -> ${currentRange.start.line}-${currentRange.end.line}`);
-    
-                } catch (e) {
-                    console.error(`[HistoryFilter] Error processing history at index ${i}:`, e);
-                }
-            }
-    
-            // Only include the oldest snapshot if the tracked range maps to valid lines within it,
-            // i.e. the selection exists in the initial version of the file. This avoids always
-            // showing a "file vs empty" diff for the very first snapshot when nothing changed there.
-            const oldest = sortedHistory[sortedHistory.length - 1];
-            try {
-                const oldestUri = await this.storage.getSnapshotUri(oldest, fileUri);
-                const oldestData = await (await import('fs')).promises.readFile(oldestUri.fsPath, 'utf8');
-                const oldestLines = oldestData.split('\n');
-                const rangeStart = currentRange.start.line;
-                const rangeEnd = currentRange.end.line;
-                // Only include if the range falls within the oldest snapshot's line count
-                if (rangeStart < oldestLines.length) {
-                    relevantSnapshots.push({
-                        ...oldest,
-                        relevantRange: { start: rangeStart, end: Math.min(rangeEnd, oldestLines.length - 1) }
-                    });
-                    console.log(`[HistoryFilter] Oldest snapshot included: ${oldest.id} (range ${rangeStart}-${rangeEnd})`);
-                } else {
-                    console.log(`[HistoryFilter] Oldest snapshot skipped: mapped range ${rangeStart}-${rangeEnd} is out of bounds (file has ${oldestLines.length} lines)`);
-                }
-            } catch (e) {
-                // Fallback: always include the oldest snapshot if we can't read it
-                const inclusiveEnd = (currentRange.end.character === 0 && currentRange.end.line > currentRange.start.line)
-                    ? currentRange.end.line - 1
-                    : currentRange.end.line;
-                relevantSnapshots.push({
-                    ...oldest,
-                    relevantRange: { start: currentRange.start.line, end: inclusiveEnd }
-                });
-            }
+    /**
+     * Filters the local timeline down to the snapshots where a range actually
+     * changed, following the range backwards through history.
+     *
+     * The walk is positional (diff arithmetic) but verified by content: when an
+     * `anchor` is given, every mapped range is checked against the anchor's
+     * signature line and corrected if the block moved. When the block cannot be
+     * found at all, the walk stops there — that snapshot is where it appears —
+     * instead of dragging a meaningless range further back.
+     */
+    async filterHistoryForSelection(
+        history: Snapshot[],
+        fileUri: vscode.Uri,
+        selection: vscode.Range,
+        anchor?: RangeAnchor
+    ): Promise<Snapshot[]> {
+        return (await this.filterHistoryForRange(history, fileUri, selection, anchor)).relevant;
+    }
 
-            // If no relevant snapshots were found at all, return the full unfiltered history
-            // so the user isn't left with a confusing empty or single-entry list.
-            if (relevantSnapshots.length === 0) {
-                console.log(`[HistoryFilter] No relevant snapshots found, returning full history as fallback.`);
-                return history;
-            }
+    /**
+     * The same walk, with the snapshots it could not read reported separately.
+     *
+     * "The block never changed here" and "this version cannot be read" look
+     * identical in a filtered list — both leave the entry out — and conflating
+     * them tells the user the file has no history for the block when the truth
+     * is that its content is missing.
+     */
+    async filterHistoryForRange(
+        history: Snapshot[],
+        fileUri: vscode.Uri,
+        selection: vscode.Range,
+        anchor?: RangeAnchor
+    ): Promise<RangeHistoryResult> {
+        const unreadable: Snapshot[] = [];
+        if (history.length === 0) return { relevant: [], unreadable };
 
-            console.log(`[HistoryFilter] Found ${relevantSnapshots.length} relevant snapshots.`);
-    
-            return relevantSnapshots;
+        // Storage has already told us which entries have no content on disk.
+        // They are set aside before the walk rather than discovered during it:
+        // `git diff --no-index` against a path that is not there resolves to no
+        // output, which reads as "nothing changed here" — a missing version
+        // would otherwise be silently counted as evidence that the block never
+        // changed, which is the opposite of what is known about it.
+        const missingContent = history.filter(s => s.contentMissing && s.storagePath);
+        for (const snapshot of missingContent) unreadable.push(snapshot);
+        if (missingContent.length > 0) {
+            console.log(`[HistoryFilter] ${missingContent.length} snapshot(s) have no content in storage and cannot be compared.`);
+            history = history.filter(s => !(s.contentMissing && s.storagePath));
+            if (history.length === 0) return { relevant: [], unreadable };
         }
-    private parseHunks(diff: string): DiffHunk[] {
-        const hunks: DiffHunk[] = [];
-        const lines = diff.split('\n');
-        
-        let currentHunk: DiffHunk | null = null;
-        let currentNew = 0;
 
-        for (const line of lines) {
-            if (line.startsWith('@@')) {
-                const match = line.match(/^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/);
-                if (match) {
-                    if (currentHunk) hunks.push(currentHunk);
-                    
-                    const newStart = parseInt(match[3]);
-                    currentHunk = {
-                        oldStart: parseInt(match[1]),
-                        oldLines: match[2] ? parseInt(match[2]) : 1,
-                        newStart: newStart,
-                        newLines: match[4] ? parseInt(match[4]) : 1,
-                        touchedLines: new Set()
-                    };
-                    currentNew = newStart - 1; // 0-based
-                }
-            } else if (currentHunk) {
-                if (line.startsWith(' ')) {
-                    currentNew++;
-                } else if (line.startsWith('-') && !line.startsWith('---')) {
-                    // Deletion: affects the current seam (currentNew).
-                    currentHunk.touchedLines.add(currentNew);
-                } else if (line.startsWith('+') && !line.startsWith('+++')) {
-                    // Addition: The content at currentNew is new.
-                    currentHunk.touchedLines.add(currentNew);
-                    currentNew++;
-                }
+        // Sort new -> old
+        const sorted = [...history].sort((a, b) => b.timestamp - a.timestamp);
+        let signature = (anchor?.signatureLine ?? '').trim();
+        let range = toLineRange(selection);
+        let anchoring: RangeAnchoring = 'position';
+
+        console.log(`[HistoryFilter] Filtering ${history.length} snapshots for ${fileUri.fsPath} range ${range.startLine}-${range.endLine}${signature ? ` anchored on "${signature}"` : ''}`);
+
+        // Step 0: map the range from the file on disk onto the newest snapshot.
+        try {
+            const newestUri = await this.storage.getSnapshotUri(sorted[0], fileUri);
+            // Not cached: the file on disk keeps changing.
+            const hunks = parseHunks(await this.gitService.getHunks(newestUri.fsPath, fileUri.fsPath));
+            const landed = await this.place(mapRangeBackwards(range, hunks), sorted[0], fileUri, signature, height(range));
+            range = landed.range;
+
+            if (landed.anchoring === 'lost') {
+                // The anchor text is not in the newest snapshot — the block was
+                // probably just renamed on disk. Track by position rather than
+                // claiming there is no history.
+                console.log('[HistoryFilter] Anchor not found in the newest snapshot; falling back to positional tracking.');
+                signature = '';
+            } else {
+                anchoring = landed.anchoring;
+            }
+            console.log(`[HistoryFilter] Initial map (Current -> Newest): ${range.startLine}-${range.endLine} (${anchoring})`);
+        } catch (e) {
+            await this.noteUnreadable([sorted[0]], fileUri, unreadable, e,
+                '[HistoryFilter] Error mapping initial range:');
+        }
+
+        const relevant: Snapshot[] = [];
+
+        for (let i = 0; i < sorted.length - 1; i++) {
+            const newSnapshot = sorted[i];
+            const oldSnapshot = sorted[i + 1];
+
+            let hunks: DiffHunk[];
+            try {
+                hunks = await this.hunksBetween(oldSnapshot, newSnapshot, fileUri);
+            } catch (e) {
+                await this.noteUnreadable([newSnapshot, oldSnapshot], fileUri, unreadable, e,
+                    `[HistoryFilter] Error diffing snapshots at index ${i}:`);
+                continue;
+            }
+
+            const touched = isRangeRelevant(range, hunks);
+            if (touched) {
+                relevant.push(withRange(newSnapshot, range, anchoring));
+                console.log(`[HistoryFilter] Relevant: ${newSnapshot.id} (${newSnapshot.label || newSnapshot.eventType}) range ${range.startLine}-${range.endLine} (${anchoring})`);
+            }
+
+            const landed = await this.place(mapRangeBackwards(range, hunks), oldSnapshot, fileUri, signature, height(range));
+            if (landed.anchoring === 'lost') {
+                // The block does not exist this far back: newSnapshot is where it
+                // first appears, and there is nothing older to follow.
+                console.log(`[HistoryFilter] Block originates in ${newSnapshot.id}; stopping the walk.`);
+                markOrigin(relevant, newSnapshot, range, touched);
+                return { relevant, unreadable };
+            }
+
+            range = landed.range;
+            anchoring = landed.anchoring;
+        }
+
+        // The oldest snapshot has no older neighbour to diff against, so it can
+        // never count as "changed here". Include it as the earliest version of
+        // the block we hold, but only when there is a trail to attach it to —
+        // that way a range nothing ever touched comes back empty instead of
+        // showing one stray entry.
+        const oldest = sorted[sorted.length - 1];
+        if (relevant.length > 0 || sorted.length === 1) {
+            relevant.push(withRange(oldest, range, 'origin'));
+            console.log(`[HistoryFilter] Oldest snapshot included: ${oldest.id} (range ${range.startLine}-${range.endLine})`);
+        }
+
+        console.log(`[HistoryFilter] Found ${relevant.length} relevant snapshots${unreadable.length > 0 ? `, ${unreadable.length} unreadable` : ''}.`);
+        return { relevant, unreadable };
+    }
+
+    /**
+     * Records the snapshots in `candidates` whose content is gone.
+     *
+     * A diff can fail for reasons that have nothing to do with storage, so the
+     * failure alone is not enough: each candidate is checked against disk, and
+     * only a genuinely missing blob is reported as unreadable. Anything else
+     * stays what it was — an error worth logging.
+     */
+    private async noteUnreadable(
+        candidates: Snapshot[],
+        fileUri: vscode.Uri,
+        unreadable: Snapshot[],
+        error: unknown,
+        logPrefix: string
+    ): Promise<void> {
+        const missing: Snapshot[] = [];
+        for (const snapshot of candidates) {
+            // An entry with no storagePath (a label) holds no content by
+            // design; it is not broken and never was part of the content walk.
+            if (!snapshot?.storagePath) continue;
+            try {
+                const uri = await this.storage.getSnapshotUri(snapshot, fileUri);
+                await vscode.workspace.fs.stat(uri);
+            } catch {
+                missing.push(snapshot);
             }
         }
-        if (currentHunk) hunks.push(currentHunk);
+
+        if (missing.length === 0) {
+            console.error(logPrefix, error);
+            return;
+        }
+
+        for (const snapshot of missing) {
+            if (!unreadable.some(u => u.id === snapshot.id)) unreadable.push(snapshot);
+        }
+        console.log(`[HistoryFilter] Cannot read ${missing.map(m => m.id).join(', ')}: content is not in storage.`);
+    }
+
+    private async hunksBetween(oldSnapshot: Snapshot, newSnapshot: Snapshot, fileUri: vscode.Uri): Promise<DiffHunk[]> {
+        const key = `${oldSnapshot.id}->${newSnapshot.id}`;
+        const cached = this.hunkCache.get(key);
+        if (cached) return cached;
+
+        const oldUri = await this.storage.getSnapshotUri(oldSnapshot, fileUri);
+        const newUri = await this.storage.getSnapshotUri(newSnapshot, fileUri);
+        const hunks = parseHunks(await this.gitService.getHunks(oldUri.fsPath, newUri.fsPath));
+
+        this.hunkCache.set(key, hunks);
         return hunks;
     }
 
-    private isRelevant(range: vscode.Range, hunks: DiffHunk[]): boolean {
-        const rStart = range.start.line;
-        let effectiveEnd = range.end.line;
-        if (range.end.character === 0 && effectiveEnd > rStart) {
-            effectiveEnd--;
+    /**
+     * Places a mapped range inside one snapshot, correcting it by content when
+     * an anchor is available.
+     *
+     * The invariant with an anchor is that the tracked range *begins* at the
+     * anchor line. A hunk that overlaps the range start drags it up to where
+     * the hunk began, which is how a positional walk slowly swallows unrelated
+     * lines above the block; checking the first line catches exactly that, and
+     * a block that moved is found again wherever it went.
+     */
+    private async place(
+        candidate: LineRange,
+        snapshot: Snapshot,
+        fileUri: vscode.Uri,
+        signature: string,
+        trackedHeight: number
+    ): Promise<Landing> {
+        const lines = await this.readSnapshotLines(snapshot, fileUri);
+        if (!lines) {
+            // Cannot verify: keep the positional answer rather than dropping the
+            // snapshot from the timeline.
+            return { range: candidate, anchoring: 'position' };
         }
 
-        for (const h of hunks) {
-            for (const lineIdx of h.touchedLines) {
-                if (lineIdx >= rStart && lineIdx <= effectiveEnd) {
-                    return true;
-                }
-            }
+        const clamped = clampRange(candidate, lines.length);
+
+        if (!signature) {
+            // Without an anchor, a range that maps past the end of the file is
+            // the end of the trail.
+            if (candidate.startLine >= lines.length) return { range: clamped, anchoring: 'lost' };
+            return { range: clamped, anchoring: 'position' };
         }
-        return false;
+
+        if ((lines[clamped.startLine] ?? '').trim() === signature) {
+            return { range: clamped, anchoring: 'position' };
+        }
+
+        const found = findNearest(lines, signature, clamped.startLine);
+        if (found < 0) return { range: clamped, anchoring: 'lost' };
+
+        return {
+            range: clampRange({ startLine: found, endLine: found + trackedHeight }, lines.length),
+            anchoring: 'content'
+        };
     }
 
-    private mapRangeBackwards(range: vscode.Range, hunks: DiffHunk[]): vscode.Range {
-        let start = range.start.line;
-        let end = range.end.line; // Keep simplified line tracking
-        
-        // Handle end line character check for precise line range
-        let effectiveEndLine = end;
-        if (range.end.character === 0 && end > start) {
-            effectiveEndLine--;
+    private async readSnapshotLines(snapshot: Snapshot, fileUri: vscode.Uri): Promise<string[] | undefined> {
+        try {
+            const uri = await this.storage.getSnapshotUri(snapshot, fileUri);
+            const data = await vscode.workspace.fs.readFile(uri);
+            return new TextDecoder().decode(data).split(/\r?\n/);
+        } catch (e) {
+            console.warn(`[HistoryFilter] Could not read snapshot ${snapshot.id}:`, e);
+            return undefined;
         }
-
-        // We need to apply shifts caused by hunks that appear BEFORE the range.
-        // Hunks are usually ordered by line number.
-        
-        let shiftStart = 0;
-        let shiftEnd = 0;
-        
-        let newStart = start;
-        let newEndLine = effectiveEndLine;
-
-        for (const h of hunks) {
-            const hNewStart = h.newStart - 1;
-            const hNewEnd = h.newStart - 1 + h.newLines; // exclusive limit
-            const shift = h.newLines - h.oldLines; // +ve if added lines, -ve if removed
-
-            // Update Start
-            if (hNewEnd <= start) {
-                // Hunk is strictly before start
-                newStart -= shift;
-            } else if (hNewStart < start && hNewEnd > start) {
-                 // Intersection containing start
-                 // Map to start of change in Old
-                 newStart = h.oldStart - 1;
-            }
-
-            // Update End
-            if (hNewEnd <= effectiveEndLine) {
-                 newEndLine -= shift;
-            } else if (hNewStart < effectiveEndLine && hNewEnd > effectiveEndLine) {
-                 // Intersection containing end
-                 newEndLine = (h.oldStart - 1) + (h.oldLines > 0 ? h.oldLines - 1 : 0);
-            } else if (hNewStart <= effectiveEndLine && hNewEnd > effectiveEndLine) {
-                 // partial overlap at end
-                 newEndLine = (h.oldStart - 1) + (h.oldLines > 0 ? h.oldLines - 1 : 0); 
-            }
-        }
-        
-        // Reconstruct Range
-        // We only track lines, so we lose character precision.
-        // That's acceptable for "History for Selection".
-        // console.log(`Mapped range: ${start}-${effectiveEndLine} -> ${newStart}-${newEndLine}`);
-        return new vscode.Range(newStart, 0, newEndLine + 1, 0);
     }
+}
+
+/** Line index whose trimmed text equals the signature, closest to `from`. */
+function findNearest(lines: string[], signature: string, from: number): number {
+    let best = -1;
+    let bestDistance = Number.MAX_SAFE_INTEGER;
+
+    for (let i = 0; i < lines.length; i++) {
+        if ((lines[i] ?? '').trim() !== signature) continue;
+        const distance = Math.abs(i - from);
+        if (distance < bestDistance) {
+            best = i;
+            bestDistance = distance;
+        }
+    }
+
+    return best;
+}
+
+function height(range: LineRange): number {
+    return Math.max(0, range.endLine - range.startLine);
+}
+
+function toLineRange(selection: vscode.Range): LineRange {
+    let endLine = selection.end.line;
+    // VS Code selections use an exclusive end: when end.character is 0 the
+    // end.line is one past the last selected line.
+    if (selection.end.character === 0 && endLine > selection.start.line) {
+        endLine--;
+    }
+    return { startLine: selection.start.line, endLine: Math.max(selection.start.line, endLine) };
+}
+
+function withRange(snapshot: Snapshot, range: LineRange, anchoring: RangeAnchoring): Snapshot {
+    return {
+        ...snapshot,
+        relevantRange: { start: range.startLine, end: range.endLine },
+        rangeAnchoring: anchoring
+    };
+}
+
+/** Marks the snapshot where the tracked block first appears. */
+function markOrigin(relevant: Snapshot[], snapshot: Snapshot, range: LineRange, alreadyPushed: boolean) {
+    if (alreadyPushed && relevant.length > 0) {
+        relevant[relevant.length - 1] = { ...relevant[relevant.length - 1], rangeAnchoring: 'origin' };
+        return;
+    }
+    relevant.push(withRange(snapshot, range, 'origin'));
 }

@@ -67,6 +67,21 @@ const mockVscode = {
         Directory: 2,
         SymbolicLink: 64
     },
+    SymbolKind: {
+        File: 0, Module: 1, Namespace: 2, Package: 3, Class: 4, Method: 5,
+        Property: 6, Field: 7, Constructor: 8, Enum: 9, Interface: 10,
+        Function: 11, Variable: 12, Constant: 13, String: 14, Number: 15,
+        Boolean: 16, Array: 17, Object: 18, Key: 19, Null: 20, EnumMember: 21,
+        Struct: 22, Event: 23, Operator: 24, TypeParameter: 25
+    },
+    FoldingRangeKind: { Comment: 1, Imports: 2, Region: 3 },
+    FoldingRange: class {
+        constructor(start, end, kind) {
+            this.start = start;
+            this.end = end;
+            this.kind = kind;
+        }
+    },
     window: {
         createStatusBarItem: () => ({ show: () => {}, hide: () => {}, text: '', command: '' }),
         createOutputChannel: (name) => ({
@@ -122,6 +137,29 @@ const mockVscode = {
                     throw error;
                 }
                 fsStore.delete(uri.toString());
+            },
+            // The store is flat, so a directory exists only as a prefix of the
+            // files written under it. Entries are derived from those keys.
+            readDirectory: async (uri) => {
+                const base = uri.toString().replace(/\/$/, '') + '/';
+                const seen = new Map();
+                for (const key of fsStore.keys()) {
+                    if (!key.startsWith(base)) continue;
+                    const rest = key.slice(base.length);
+                    if (!rest) continue;
+                    const slash = rest.indexOf('/');
+                    if (slash === -1) {
+                        seen.set(rest, mockVscode.FileType.File);
+                    } else {
+                        seen.set(rest.slice(0, slash), mockVscode.FileType.Directory);
+                    }
+                }
+                if (seen.size === 0 && !fsStore.has(uri.toString())) {
+                    const error = new Error('Directory not found: ' + uri.toString());
+                    error.code = 'FileNotFound';
+                    throw error;
+                }
+                return [...seen.entries()];
             },
             stat: async (uri) => {
                 if (!fsStore.has(uri.toString())) {

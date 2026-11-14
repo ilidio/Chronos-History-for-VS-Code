@@ -21,11 +21,13 @@
     "onStartupFinished",
     "onCommand:chronos.showHistory",
     "onCommand:chronos.showHistoryForSelection",
+    "onCommand:chronos.showHistoryForContext",
     "onCommand:chronos.showProjectHistory",
     "onCommand:chronos.showRecentChanges",
     "onCommand:chronos.putLabel",
     "onCommand:chronos.showGitHistory",
-    "onCommand:chronos.gitHistoryForSelection"
+    "onCommand:chronos.gitHistoryForSelection",
+    "onCommand:chronos.gitHistoryForContext"
   ],
   "main": "./dist/extension.js",
   "contributes": {
@@ -206,6 +208,11 @@
         "category": "Chronos"
       },
       {
+        "command": "chronos.showHistoryForContext",
+        "title": "Show History for Context",
+        "category": "Chronos"
+      },
+      {
         "command": "chronos.showProjectHistory",
         "title": "Show Project History",
         "category": "Chronos"
@@ -257,6 +264,11 @@
       {
         "command": "chronos.gitHistoryForSelection",
         "title": "Git History for Selection",
+        "category": "Git"
+      },
+      {
+        "command": "chronos.gitHistoryForContext",
+        "title": "Git History for Context",
         "category": "Git"
       },
       {
@@ -317,6 +329,11 @@
       {
         "command": "chronos.runDiagnostics",
         "title": "Run Diagnostics",
+        "category": "Chronos"
+      },
+      {
+        "command": "chronos.cleanOrphanedHistory",
+        "title": "Remove Orphaned History Entries...",
         "category": "Chronos"
       },
       {
@@ -413,6 +430,11 @@
           "when": "editorHasSelection"
         },
         {
+          "command": "chronos.showHistoryForContext",
+          "group": "1_local@3",
+          "when": "editorTextFocus"
+        },
+        {
           "command": "chronos.showGitHistory",
           "group": "2_git@0"
         },
@@ -420,6 +442,11 @@
           "command": "chronos.gitHistoryForSelection",
           "group": "2_git@1",
           "when": "editorHasSelection"
+        },
+        {
+          "command": "chronos.gitHistoryForContext",
+          "group": "2_git@2",
+          "when": "editorTextFocus"
         },
         {
           "command": "chronos.showProjectHistory",
@@ -466,6 +493,7 @@
   "scripts": {
     "vscode:prepublish": "npm run bundle",
     "compile": "tsc -p ./",
+    "test:integration": "npm run compile && node test/integration/runTest.js",
     "watch": "tsc -watch -p ./",
     "bundle": "esbuild ./src/extension.ts --bundle --outfile=dist/extension.js --external:vscode --format=cjs --platform=node --minify",
     "bundle-watch": "esbuild ./src/extension.ts --bundle --outfile=dist/extension.js --external:vscode --format=cjs --platform=node --watch"
@@ -475,8 +503,10 @@
     "@types/node": "^24.0.0",
     "@types/uuid": "^9.0.8",
     "@types/vscode": "^1.95.0",
+    "@vscode/test-electron": "^3.1.0",
     "@vscode/vsce": "^2.32.0",
     "esbuild": "^0.27.4",
+    "mocha": "^12.0.3",
     "typescript": "^5.9.3"
   },
   "dependencies": {

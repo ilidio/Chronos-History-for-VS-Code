@@ -60,6 +60,48 @@ if [ $? -ne 0 ]; then
     exit 1
 fi
 
+echo "🧪 Running Selection History Tests..."
+node test/selection_history_tests.js
+if [ $? -ne 0 ]; then
+    echo "❌ Selection History tests failed!"
+    exit 1
+fi
+
+echo "🧪 Running Context Resolver Tests..."
+node test/context_resolver_tests.js
+if [ $? -ne 0 ]; then
+    echo "❌ Context Resolver tests failed!"
+    exit 1
+fi
+
+echo "🧪 Running Content Anchor Tests..."
+node test/content_anchor_tests.js
+if [ $? -ne 0 ]; then
+    echo "❌ Content Anchor tests failed!"
+    exit 1
+fi
+
+echo "🧪 Running Git Range Failure Tests..."
+node test/git_range_failure_tests.js
+if [ $? -ne 0 ]; then
+    echo "❌ Git Range Failure tests failed!"
+    exit 1
+fi
+
+echo "🧪 Running Git Integration Tests (real git)..."
+node test/git_integration_tests.js
+if [ $? -ne 0 ]; then
+    echo "❌ Git Integration tests failed!"
+    exit 1
+fi
+
+echo "🧪 Running Hard Git History Tests (real git, awkward history)..."
+node test/git_hard_history_tests.js
+if [ $? -ne 0 ]; then
+    echo "❌ Hard git history tests failed!"
+    exit 1
+fi
+
 echo "🧪 Running History-Loss Regression Tests..."
 node test/data_loss_tests.js
 if [ $? -ne 0 ]; then
