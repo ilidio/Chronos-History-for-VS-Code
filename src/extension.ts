@@ -18,6 +18,7 @@ import { AIService } from './ai/aiService';
 import { BackupService } from './backup';
 import { ProjectRestorer } from './timeTravel';
 import { Snapshot, GitCommit, GitHistoryConfig, GitRangeHistory } from './types';
+import { getChronosTempDir } from './tempFiles';
 import { resolveContextForEditor, ResolvedContext } from './utils/contextResolver';
 import { LineRange, mapRangeBackwards, parseHunks } from './utils/rangeMapper';
 
@@ -373,7 +374,7 @@ async function generateAICommitMessage() {
 }
 
 async function createTempFile(name: string, content: string): Promise<vscode.Uri> {
-    const tmpDir = path.join(os.tmpdir(), 'chronos_diff');
+    const tmpDir = getChronosTempDir();
     try {
         if (!fs.existsSync(tmpDir)) {
             fs.mkdirSync(tmpDir, { recursive: true });
@@ -1255,19 +1256,26 @@ async function cleanOrphanedHistory() {
         const elsewhere = reports.reduce((n, r) => n + r.total, 0);
         vscode.window.showInformationMessage(
             elsewhere > 0
-                ? `Chronos: no orphaned entries in this project. ${elsewhere} belong to other projects in the shared store and are left alone.`
-                : 'Chronos: every history entry still has its content on disk.'
+                ? `Chronos: nothing to remove in this project. ${elsewhere} entr${elsewhere === 1 ? 'y' : 'ies'} belong to other projects in the shared store and are left alone.`
+                : 'Chronos: every history entry still has its content on disk, and none of them record a Chronos temporary.'
         );
         return;
     }
 
     const total = own.reduce((n, r) => n + r.total, 0);
     const files = own.flatMap(r => r.files);
-    const shown = files.slice(0, 10).map(f => `  • ${f.filePath} — ${f.snapshots.length}`).join('\n');
+    const internal = files.filter(f => f.reason === 'chronos-internal');
+    const internalTotal = internal.reduce((n, f) => n + f.snapshots.length, 0);
+    const shown = files.slice(0, 10)
+        .map(f => `  • ${f.filePath} — ${f.snapshots.length}${f.reason === 'chronos-internal' ? ' (Chronos temporary)' : ''}`)
+        .join('\n');
     const more = files.length > 10 ? `\n  ...and ${files.length - 10} more file(s)` : '';
+    const internalNote = internalTotal > 0
+        ? `\n\n${internalTotal} of them record Chronos's own temporary diff files rather than files of yours; those are removed with their content.`
+        : '';
 
     const choice = await vscode.window.showWarningMessage(
-        `Chronos: ${total} history entr${total === 1 ? 'y' : 'ies'} point at content that is no longer on disk, across ${files.length} file${files.length === 1 ? '' : 's'}:\n\n${shown}${more}\n\nRemoving them deletes those entries from the history index for good. Entries whose content is still there are not touched.`,
+        `Chronos: ${total} history entr${total === 1 ? 'y' : 'ies'} can be removed, across ${files.length} file${files.length === 1 ? '' : 's'}:\n\n${shown}${more}${internalNote}\n\nRemoving them deletes those entries from the history index for good. Snapshots of your own files whose content is still there are not touched.`,
         { modal: true },
         'Remove Them'
     );

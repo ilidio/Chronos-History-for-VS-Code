@@ -195,9 +195,16 @@ are listed but have nothing to open.
     which files they belong to.
 *   **Remove Orphaned History Entries...** clears those entries from the index.
     It tells you how many and from which files first, asks you to confirm, and
-    never touches an entry whose content is still there — each one is re-checked
-    against disk immediately before it is dropped. Projects other than the ones
-    you have open are reported but left alone.
+    never touches a snapshot of your own files whose content is still there —
+    each one is re-checked against disk immediately before it is dropped.
+    Projects other than the ones you have open are reported but left alone.
+*   The same command also clears entries that record **Chronos's own temporary
+    diff files** rather than files of yours. Earlier versions snapshotted the
+    throwaway files Chronos writes to show a diff; because those are deleted
+    straight after, they filled the **Deleted Files** view with `/var/folders/…`
+    paths. Chronos no longer records them, and the command removes the ones
+    already in your history, with their content. They are identified by their
+    path, so nothing of yours is affected.
 *   **Show History for Context / for Selection** separates "none of your
     snapshots changed this block" from "these versions cannot be read". If some
     versions have lost their content, you get the ones that are still readable
