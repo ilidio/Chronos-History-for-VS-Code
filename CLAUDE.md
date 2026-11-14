@@ -146,6 +146,19 @@ rules hold:
   source untouched. Both entry points must warn: the `chronos.useSharedStorage`
   command and the `onDidChangeConfiguration` handler for a path edited by hand.
 
+- **Chronos's own files are not history.** The diff commands write throwaway
+  files to `<tmpdir>/chronos_diff/` — real `file:` documents, so a scheme check
+  does not see them, and outside the workspace, so `isExcluded()` (which matches
+  workspace-relative paths) does not either. The folder name lives in
+  `src/tempFiles.ts` and nowhere else; `HistoryManager.isTrackable()` rejects
+  both non-`file:` schemes and anything under that folder, and
+  `saveSnapshot()` refuses a Chronos-internal path independently — such a file
+  has no workspace folder, so `getStorageForFile()` would drop its snapshot in
+  the root of the shared store, belonging to no project. `findOrphanedEntries()`
+  reports those entries with `reason: 'chronos-internal'` even though their
+  content is present, judged by path only: a storage folder whose name looks
+  like a UUID says nothing about what a snapshot records.
+
 Regressions for all of this live in `test/data_loss_tests.js`.
 
 ## Dependencies

@@ -3,15 +3,27 @@ import * as path from 'path';
 import * as os from 'os';
 import { v4 as uuidv4 } from 'uuid';
 import { Snapshot, HistoryIndex, ChronosConfig } from './types';
+import { isChronosTempPath, isUnder } from './tempFiles';
 
-/** Index entries whose blob is gone, grouped per file, for one index. */
+/**
+ * Why an entry is reported as removable.
+ *
+ * - `content-missing`: the index points at a blob that is not on disk.
+ * - `chronos-internal`: the entry is not a user file at all — it records one of
+ *   Chronos's own diff temporaries, or a file inside its storage root. These
+ *   usually still have their content, so they are not orphans in the strict
+ *   sense; they are entries that should never have been written.
+ */
+export type RemovableReason = 'content-missing' | 'chronos-internal';
+
+/** Index entries that can be dropped, grouped per file, for one index. */
 export interface OrphanReport {
     /** `index.json` URI, as a string — the key `removeOrphanedEntries` acts on. */
     indexKey: string;
     rootPath: string;
     /** True when this index belongs to a project currently open. */
     own: boolean;
-    files: { filePath: string; snapshots: Snapshot[] }[];
+    files: { filePath: string; snapshots: Snapshot[]; reason: RemovableReason }[];
     total: number;
 }
 
@@ -291,6 +303,17 @@ export class HistoryStorage {
     ): Promise<Snapshot | null> {
         await this.init();
         
+        // Second line of defence, independent of the capture guard in
+        // HistoryManager: a file of Chronos's own — a diff temporary, or
+        // anything inside the storage root — is never history. Such a file is
+        // outside every workspace, so getStorageForFile() would drop its
+        // snapshot straight into the root of the shared store, where it belongs
+        // to no project and shows up in every project's views.
+        if (this.isChronosInternalPath(document.uri.fsPath)) {
+            this.log(`Refusing to snapshot a Chronos-internal file: ${document.uri.fsPath}`);
+            return null;
+        }
+
         const { root, indexUri } = await this.getStorageForFile(document.uri);
         const index = await this.loadIndex(indexUri);
         const relativePath = vscode.workspace.asRelativePath(document.uri, false);
@@ -462,12 +485,20 @@ export class HistoryStorage {
         const reports: OrphanReport[] = [];
 
         for (const [key, { index, root }] of this.indices) {
-            const byFile = new Map<string, Snapshot[]>();
+            const byFile = new Map<string, { snapshots: Snapshot[], reason: RemovableReason }>();
             let total = 0;
             for (const s of index.snapshots) {
-                if (!(await this.isContentMissing(root, s))) continue;
-                const list = byFile.get(s.filePath) ?? [];
-                list.push(s);
+                // A Chronos temporary is removable whether or not its blob is
+                // still there, and that check comes first: these entries are
+                // never the user's history, so "the content is present" is not
+                // a reason to keep them.
+                const reason: RemovableReason | null =
+                    this.isChronosInternalPath(s.filePath) ? 'chronos-internal'
+                    : (await this.isContentMissing(root, s)) ? 'content-missing'
+                    : null;
+                if (!reason) continue;
+                const list = byFile.get(s.filePath) ?? { snapshots: [], reason };
+                list.snapshots.push(s);
                 byFile.set(s.filePath, list);
                 total++;
             }
@@ -478,14 +509,29 @@ export class HistoryStorage {
                 own: ownKeys.has(key),
                 total,
                 files: [...byFile.entries()]
-                    .map(([filePath, snapshots]) => ({
+                    .map(([filePath, { snapshots, reason }]) => ({
                         filePath,
+                        reason,
                         snapshots: snapshots.sort((a, b) => b.timestamp - a.timestamp)
                     }))
                     .sort((a, b) => b.snapshots.length - a.snapshots.length)
             });
         }
         return reports;
+    }
+
+    /**
+     * True when a recorded path is Chronos's own, not the user's.
+     *
+     * Only ever decided from the path: the UUID-looking folder names in the
+     * storage root say nothing about what a snapshot records, and judging by
+     * them would delete real history from a project whose name happens to look
+     * like one.
+     */
+    private isChronosInternalPath(filePath: string): boolean {
+        if (!filePath || !path.isAbsolute(filePath)) return false;
+        if (isChronosTempPath(filePath)) return true;
+        return isUnder(this.globalStorageRoot.fsPath, filePath);
     }
 
     /** True when the snapshot claims stored content that is not there. */
@@ -519,12 +565,18 @@ export class HistoryStorage {
             }
 
             const kept: Snapshot[] = [];
+            const blobsToDelete: vscode.Uri[] = [];
             for (const s of index.snapshots) {
                 if (!requested.has(s.id)) {
                     kept.push(s);
                     continue;
                 }
-                if (await this.isContentMissing(root, s)) {
+                if (this.isChronosInternalPath(s.filePath)) {
+                    // Re-checked here from the path, not taken from the report:
+                    // nothing but Chronos's own files is dropped this way.
+                    removed++;
+                    if (s.storagePath) blobsToDelete.push(vscode.Uri.joinPath(root, s.storagePath));
+                } else if (await this.isContentMissing(root, s)) {
                     removed++;
                 } else {
                     // The blob reappeared between the report and the
@@ -536,7 +588,17 @@ export class HistoryStorage {
 
             if (removed > 0 || keptWithContent > 0) {
                 index.snapshots = kept;
+                // The index goes first, as everywhere else: a failed write then
+                // leaves unreferenced blobs, not entries pointing at content
+                // that is gone.
                 await this.saveIndex(index, vscode.Uri.parse(report.indexKey));
+                for (const blob of blobsToDelete) {
+                    try {
+                        await vscode.workspace.fs.delete(blob);
+                    } catch (e) {
+                        this.log(`Could not delete temp snapshot content ${blob.fsPath}: ${e}`);
+                    }
+                }
             }
         }
 
@@ -676,10 +738,11 @@ export class HistoryStorage {
             if (!report) {
                 out += `Orphaned Entries: 0\n`;
             } else {
-                out += `Orphaned Entries: ${report.total} (listed in the index, content missing from disk)\n`;
+                out += `Orphaned Entries: ${report.total} (content missing from disk, or not a user file)\n`;
                 for (const file of report.files) {
                     const newest = new Date(file.snapshots[0].timestamp).toLocaleString();
-                    out += `  - ${file.filePath}: ${file.snapshots.length} (newest ${newest})\n`;
+                    const why = file.reason === 'chronos-internal' ? ' [Chronos internal file]' : '';
+                    out += `  - ${file.filePath}: ${file.snapshots.length} (newest ${newest})${why}\n`;
                 }
             }
             out += `----------------------------\n`;
@@ -689,7 +752,8 @@ export class HistoryStorage {
         if (totalOrphans > 0) {
             out += `\n${totalOrphans} orphaned entr${totalOrphans === 1 ? 'y' : 'ies'} found.\n`;
             out += `Run "Chronos: Remove Orphaned History Entries" to clear them from the index.\n`;
-            out += `That only removes entries whose content is already gone; nothing openable is touched.\n`;
+            out += `That removes entries whose content is already gone, and entries recording Chronos's own\n`;
+            out += `temporary files; a snapshot of a file of yours is never touched.\n`;
         }
         return out;
     }

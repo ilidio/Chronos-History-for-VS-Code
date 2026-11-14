@@ -18,6 +18,12 @@
 //      were openable, with no way to see how many were broken or clear them.
 //   6. Changing the storage root moved nothing and warned about nothing, so all
 //      history recorded under the old root silently stopped being found.
+//   8. Chronos snapshotted the throwaway files it writes for its own diff
+//      views. They are deleted straight after, so "Deleted Files" filled up
+//      with /var/folders/... paths and stopped showing the user's own deleted
+//      files at all — history that was never anyone's, crowding out history
+//      that was.
+//
 //   7. prune() deleted the blobs before writing the index, and a failed index
 //      write was logged and swallowed: the entries stayed, their content was
 //      gone, and nothing said so. This is what produced 21 broken entries in a
@@ -26,7 +32,8 @@
 const Module = require('module');
 const originalRequire = Module.prototype.require;
 const path = require('path');
-const { mockVscode, fsStore } = require('./mock_vscode');
+const os = require('os');
+const { mockVscode, fsStore, documentListeners } = require('./mock_vscode');
 
 Module.prototype.require = function (request) {
     if (request === 'vscode') return mockVscode;
@@ -565,6 +572,139 @@ async function testSaveQueueRecoversFromAWriteFailure() {
         'Later saves were blocked by the earlier failure.');
 }
 
+// --- Test 11: Chronos never records its own diff temporaries ---
+async function testTempFilesAreNotCaptured() {
+    console.log('\n[Test 11] Chronos\'s own diff temporaries are never snapshotted');
+    const s = await freshStorage();
+    const { getChronosTempDir, isChronosTempPath } = require('../out/tempFiles');
+
+    documentListeners.open.length = 0;
+    documentListeners.save.length = 0;
+
+    const gitService = { getDiff: async () => '' };
+    const gitIgnoreService = {
+        refreshGitIgnorePatterns: () => {},
+        clearPatterns: () => {},
+        isPathIgnored: () => false
+    };
+    // Registers the onDidOpen / onDidSave handlers under test.
+    new HistoryManager(new mockVscode.ExtensionContext(), s.storage, gitService, gitIgnoreService);
+    check(documentListeners.open.length > 0 && documentListeners.save.length > 0,
+        'Setup: the manager registered its document handlers.',
+        'Setup failed: no document handlers were registered.');
+
+    const tempPath = path.join(getChronosTempDir(), 'commit_abc1234_cart.js');
+    check(isChronosTempPath(tempPath) && !isChronosTempPath('/workspace/src/cart.js'),
+        'A temp path is recognised and a workspace file is not.',
+        `Temp path detection is wrong for ${tempPath}.`);
+
+    const tempDoc = {
+        uri: mockVscode.Uri.file(tempPath),
+        fileName: tempPath,
+        isDirty: false,
+        getText: () => 'historical content of cart.js'
+    };
+    await mockVscode.workspace.fireDocumentEvent('open', tempDoc);
+    await mockVscode.workspace.fireDocumentEvent('save', tempDoc);
+
+    let recorded = [];
+    try { recorded = (await s.readIndex()).snapshots; } catch (e) { /* no index written at all */ }
+    check(recorded.length === 0,
+        'Opening and saving a temp diff file recorded nothing.',
+        `The temp file was snapshotted: ${JSON.stringify(recorded.map(x => x.filePath))}`);
+
+    // A real file still goes through, so the guard is not simply refusing
+    // everything outside the workspace-relative exclude check.
+    const realDoc = {
+        uri: mockVscode.Uri.file('/workspace/src/cart.js'),
+        fileName: '/workspace/src/cart.js',
+        isDirty: false,
+        getText: () => 'real content'
+    };
+    await mockVscode.workspace.fireDocumentEvent('open', realDoc);
+    const afterReal = (await s.readIndex()).snapshots;
+    check(afterReal.length === 1 && afterReal[0].filePath === 'cart.js',
+        'A real workspace file is still captured.',
+        `The guard blocked a real file too: ${JSON.stringify(afterReal)}`);
+
+    // Even reached directly, storage refuses: a file of Chronos's own has no
+    // workspace folder, so it would land in the root of the shared store.
+    const refused = await s.storage.saveSnapshot(tempDoc, 'save');
+    check(refused === null,
+        'storage.saveSnapshot() refuses a Chronos-internal path on its own.',
+        'saveSnapshot() recorded a Chronos temporary when called directly.');
+
+    const storedFile = { ...tempDoc, uri: mockVscode.Uri.file(path.join(s.root.fsPath, 'some-uuid')), fileName: path.join(s.root.fsPath, 'some-uuid') };
+    const refusedStored = await s.storage.saveSnapshot(storedFile, 'save');
+    check(refusedStored === null,
+        'A file inside the storage root is refused too.',
+        'A file inside the storage root was snapshotted.');
+}
+
+// --- Test 12: cleanup clears temp entries and leaves real history alone ---
+async function testCleanupRemovesTempEntries() {
+    console.log('\n[Test 12] Cleanup removes Chronos temp entries, keeps real ones');
+    const s = await freshStorage();
+    const now = Date.now();
+    const { getChronosTempDir } = require('../out/tempFiles');
+    const tempA = path.join(getChronosTempDir(), 'commit_abc1234_cart.js');
+    // Recorded in an earlier session, under a tmpdir that no longer exists.
+    const tempB = path.join(os.tmpdir(), '..', 'T', 'chronos_diff', 'branch_main_cart.js');
+
+    await s.writeIndex({
+        snapshots: [
+            { id: 'real', timestamp: now - 1000, filePath: 'src/cart.js', eventType: 'save', storagePath: 'real' },
+            { id: 'real-pinned', timestamp: now - 1100, filePath: 'src/cart.js', eventType: 'save', storagePath: 'real-pinned', pinned: true },
+            { id: 'tmp-a', timestamp: now - 2000, filePath: tempA, eventType: 'save', storagePath: 'tmp-a' },
+            { id: 'tmp-b', timestamp: now - 2500, filePath: tempB, eventType: 'manual', storagePath: 'tmp-b' },
+            { id: 'lbl', timestamp: now - 3000, filePath: '', eventType: 'label', label: 'Before refactor' }
+        ]
+    });
+    await s.writeBlob('real', 'still here');
+    await s.writeBlob('real-pinned', 'also here');
+    // The temp entries still have their content: "missing blob" would not find
+    // them, which is why the report has to judge them by path.
+    await s.writeBlob('tmp-a', 'historical cart.js');
+    await s.writeBlob('tmp-b', 'cart.js on main');
+
+    const reports = await s.storage.findOrphanedEntries();
+    const files = reports.flatMap(r => r.files);
+    check(reports.length === 1 && reports[0].total === 2,
+        'Both temp entries are reported although their content is present.',
+        `Expected 2 removable entries, got ${JSON.stringify(reports)}`);
+    check(files.every(f => f.reason === 'chronos-internal'),
+        'They are reported as Chronos-internal, not as missing content.',
+        `Wrong reasons: ${JSON.stringify(files.map(f => [f.filePath, f.reason]))}`);
+
+    // The user is told the count and the paths before anything is deleted.
+    const diag = await s.storage.runDiagnostics();
+    check(diag.includes('Chronos internal file') && diag.includes('chronos_diff'),
+        'Diagnostics names the temp entries read-only.',
+        `Diagnostics did not report the temp entries:\n${diag}`);
+
+    const { removed, keptWithContent } = await s.storage.removeOrphanedEntries(reports);
+    check(removed === 2 && keptWithContent === 0,
+        'Both temp entries were removed.',
+        `Expected removed=2 keptWithContent=0, got removed=${removed} keptWithContent=${keptWithContent}.`);
+
+    const ids = (await s.readIndex()).snapshots.map(x => x.id);
+    check(ids.length === 3 && ids.includes('real') && ids.includes('real-pinned') && ids.includes('lbl'),
+        'Real snapshots and the label survived untouched.',
+        `Real history was damaged. Index now holds: ${JSON.stringify(ids)}`);
+    check(s.blobExists('real') && s.blobExists('real-pinned'),
+        'No content of a real snapshot was deleted.',
+        'Content of a real snapshot was deleted.');
+    check(!s.blobExists('tmp-a') && !s.blobExists('tmp-b'),
+        'The temp snapshots\' content was deleted too, after the index was written.',
+        'Temp snapshot blobs were left behind unreferenced.');
+
+    // Running it again has nothing left to do.
+    const second = await s.storage.findOrphanedEntries();
+    check(second.length === 0,
+        'A second run reports nothing.',
+        `A second run still reports: ${JSON.stringify(second)}`);
+}
+
 async function run() {
     console.log('\n--- Chronos History-Loss Regression Tests ---');
     await testSizePruneKeepsPinned();
@@ -577,6 +717,8 @@ async function run() {
     await testStorageRootChangeKeepsHistory();
     await testPruneWritesIndexBeforeDeletingBlobs();
     await testSaveQueueRecoversFromAWriteFailure();
+    await testTempFilesAreNotCaptured();
+    await testCleanupRemovesTempEntries();
 
     if (failures > 0) {
         console.error(`\n❌ History-loss regression tests FAILED (${failures} check(s)).`);

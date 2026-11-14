@@ -26,6 +26,8 @@ function setFileContent(uri, content) {
     fsStore.set(uri.toString(), Buffer.from(content));
 }
 
+const documentListeners = { open: [], save: [] };
+
 const mockVscode = {
     Uri: MockUri,
     Position: class {
@@ -184,8 +186,20 @@ const mockVscode = {
         textDocuments: [],
         onDidChangeConfiguration: () => ({ dispose: () => {} }),
         onDidCreateFiles: () => ({ dispose: () => {} }),
-        onDidSaveTextDocument: () => ({ dispose: () => {} }),
-        onDidOpenTextDocument: () => ({ dispose: () => {} }),
+        // Registered handlers are kept so a suite can fire the event, which is
+        // the only way to cover the guards that run before capture.
+        onDidSaveTextDocument: (handler, thisArg) => {
+            documentListeners.save.push(handler.bind(thisArg));
+            return { dispose: () => {} };
+        },
+        onDidOpenTextDocument: (handler, thisArg) => {
+            documentListeners.open.push(handler.bind(thisArg));
+            return { dispose: () => {} };
+        },
+        /** Fires 'open' or 'save' at every handler registered so far. */
+        fireDocumentEvent: async (kind, doc) => {
+            for (const handler of documentListeners[kind]) await handler(doc);
+        },
         onDidRenameFiles: () => ({ dispose: () => {} }),
         onDidDeleteFiles: () => ({ dispose: () => {} }),
         rootPath: '/workspace'
@@ -214,4 +228,4 @@ const mockVscode = {
     }
 };
 
-module.exports = { mockVscode, fsStore, commandsMap, setFileContent };
+module.exports = { mockVscode, fsStore, commandsMap, setFileContent, documentListeners };

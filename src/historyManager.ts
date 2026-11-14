@@ -6,6 +6,7 @@ import { minimatch } from 'minimatch';
 import { AIService } from './ai/aiService';
 import { GitService } from './git/gitService';
 import { GitIgnoreService } from './git/gitIgnoreService';
+import { isChronosTempPath } from './tempFiles';
 
 export class HistoryManager {
     private storage: HistoryStorage;
@@ -83,6 +84,7 @@ export class HistoryManager {
         
         this.selectionTimeout = setTimeout(async () => {
             const doc = e.textEditor.document;
+            if (!this.isTrackable(doc.uri)) return;
             const relativePath = vscode.workspace.asRelativePath(doc.uri, false);
             if (this.isExcluded(relativePath)) return;
 
@@ -305,6 +307,30 @@ export class HistoryManager {
         }
     }
 
+    /**
+     * Whether a URI is a user file Chronos may record at all.
+     *
+     * Two guards that look alike and are not interchangeable:
+     *
+     * - The scheme test drops every document VS Code synthesises for its own
+     *   UI — `git:`, `output:`, `untitled:`, a diff's right-hand side — which
+     *   has no file on disk to have a history of.
+     * - The temp-folder test drops Chronos's own diff temporaries, and those
+     *   *are* `file:` documents: `createTempFile()` writes them to disk and
+     *   `vscode.diff` opens them as ordinary files, so the scheme test sees
+     *   nothing wrong with them. They are then deleted, so every one of them
+     *   became an entry in "Deleted Files" offering the user back a file
+     *   Chronos had invented.
+     *
+     * `isExcluded()` cannot cover either case: it matches the path *relative to
+     * the workspace*, and these files are outside it.
+     */
+    private isTrackable(uri: vscode.Uri): boolean {
+        if (uri.scheme !== 'file') return false;
+        if (isChronosTempPath(uri.fsPath)) return false;
+        return true;
+    }
+
     private isExcluded(path: string): boolean {
         if (this.config.exclude.some(pattern => minimatch(path, pattern))) {
             return true;
@@ -317,7 +343,7 @@ export class HistoryManager {
     }
 
     private async onOpen(doc: vscode.TextDocument) {
-        if (doc.uri.scheme !== 'file') return;
+        if (!this.isTrackable(doc.uri)) return;
         const relativePath = vscode.workspace.asRelativePath(doc.uri, false);
         if (this.isExcluded(relativePath)) return;
 
@@ -332,7 +358,7 @@ export class HistoryManager {
     }
 
     private async onSave(doc: vscode.TextDocument) {
-        if (doc.uri.scheme !== 'file') return;
+        if (!this.isTrackable(doc.uri)) return;
         const relativePath = vscode.workspace.asRelativePath(doc.uri, false);
         if (this.isExcluded(relativePath)) return;
 
@@ -475,6 +501,7 @@ export class HistoryManager {
     private async onRename(e: vscode.FileRenameEvent) {
         for (const file of e.files) {
             try {
+                if (!this.isTrackable(file.newUri)) continue;
                 const doc = await vscode.workspace.openTextDocument(file.newUri);
                 const relativePath = vscode.workspace.asRelativePath(file.newUri, false);
                 if (this.isExcluded(relativePath)) continue;
@@ -488,6 +515,7 @@ export class HistoryManager {
     private async onDelete(e: vscode.FileDeleteEvent) {
         for (const uri of e.files) {
             try {
+                if (!this.isTrackable(uri)) continue;
                 const relativePath = vscode.workspace.asRelativePath(uri, false);
                 if (this.isExcluded(relativePath)) continue;
                 const history = await this.storage.getHistoryForFile(uri);
