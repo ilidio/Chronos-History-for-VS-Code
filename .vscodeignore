@@ -40,3 +40,6 @@ test_secrets.json
 !dist/**
 # Ensure resources/ are included
 !resources/**
+
+# Session worktrees and local tooling state, never part of the extension
+.claude/**
